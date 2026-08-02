@@ -4,6 +4,22 @@
 -- Reproducibility: setseed() fixes random() for this session.
 -- Everything added here is CLEARLY SYNTHETIC (names "First12345")
 
+-- Guard. This generator is deliberately NOT idempotent: it inserts fixed ids
+-- (specialties 4-8, providers 201-260, encounters 10000+) so the seeded sample
+-- rows stay recognisable. Running it twice would otherwise fail deep in the
+-- script on a bare "duplicate key value violates unique constraint" and leave a
+-- half-loaded database. Fail immediately instead, and name the fix.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM encounters WHERE encounter_id >= 10000) THEN
+        RAISE EXCEPTION
+            'Volume data is already loaded. Run `make oltp` to reset the schema first, then `make volume`.';
+    END IF;
+END $$;
+
+-- Reproducibility: setseed() fixes random() for this session, so two runs of
+-- this file against a fresh schema produce byte-identical data (verified by
+-- md5 of the encounters table).
 SELECT setseed(0.42);
 
 -- --- extra reference data so GROUP BY has something to chew on --------------

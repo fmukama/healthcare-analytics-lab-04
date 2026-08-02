@@ -25,12 +25,25 @@ SCALE      ?= dev
 
 # SCALE switches the data volume without touching the SQL generator itself —
 # sql/oltp/03_volume.sql just receives whichever numbers land here as psql -v args.
+# Patient:encounter ratio is held at 1:10 on purpose. Encounters per patient is
+# what creates REPEAT VISITS, and repeat visits are the only reason a 30-day
+# readmission exists at all -- generate 70k encounters across 70k patients and
+# Q3 correctly reports 0% everywhere, proving nothing.
+#
+# Scale was chosen by measurement, not by feel. Q3's self-join is quadratic
+# (2x the rows costs ~4x the time), so it sets the ceiling for the whole run:
+#     encounters :   7,000    30,000    60,000     600,000
+#     Q3         :     83ms    1,412ms   5,556ms   >265,000ms
+# 600k makes `make all` a ~25-minute job. Below ~30k, Q1 and Q4 drop to single
+# digit milliseconds, where their star rewrites land inside run-to-run jitter
+# and the "Nx faster" claim stops being defensible. 70k keeps every query
+# comfortably above noise while the full pipeline stays in the low minutes.
 ifeq ($(SCALE),ci)
-  N_PATIENTS   = 4000
-  N_ENCOUNTERS = 30000
+  N_PATIENTS   = 700
+  N_ENCOUNTERS = 7000
 else
-  N_PATIENTS   = 60000
-  N_ENCOUNTERS = 600000
+  N_PATIENTS   = 7000
+  N_ENCOUNTERS = 70000
 endif
 
 # Two reusable command prefixes so every target below is a one-liner:
@@ -111,7 +124,10 @@ oltp: up
 	$(PSQL) -f /work/sql/oltp/02_seed.sql
 	@echo ">> OLTP schema + seed loaded"
 
-volume:                               # Phase 2: without this, every query below runs in <1ms and there's no bottleneck to find
+# `up` prerequisite, not just a bare recipe: without it, `make volume` on a
+# stopped container fails with docker's unhelpful `service "db" is not running`
+# instead of just starting the database. Same reason `oltp` depends on `up`.
+volume: up                            # Phase 2: without this, every query below runs in <1ms and there's no bottleneck to find
 	$(PSQL) -v n_patients=$(N_PATIENTS) -v n_encounters=$(N_ENCOUNTERS) \
 	        -f /work/sql/oltp/03_volume.sql
 	$(PSQL) -c "ANALYZE;"
