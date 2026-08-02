@@ -1,0 +1,37 @@
+Schema Analysis:
+  - Tables joined   : encounter_diagnoses, diagnoses, encounter_procedures,
+                      procedures
+  - Number of joins : 3 (all INNER)
+  - Rows scanned    : 280,079  (175,024 dx + 104,955 px + 60 + 40)
+  - Intermediate    : 262,323 rows materialised BEFORE aggregation
+  - Rows aggregated : 262,323 -> 2,400 groups -> top 20
+
+Bottleneck Identified:
+  Row explosion from joining two many-to-many tables to the same parent.
+
+  Each encounter carries ~2.5 diagnoses and ~1.5 procedures. Joining both
+  junction tables on encounter_id produces their CROSS PRODUCT per encounter, so
+  an encounter with 2 diagnoses and 2 procedures contributes 4 rows, not 2.
+  Measured independently of the plan:
+
+      SELECT sum(dx.c * px.c) ...  =  262,323
+
+  and the plan's join node reports exactly 262,323 actual rows, so 70,004
+  encounters inflate to 262,323 intermediate rows - 3.75x - before a single group
+  is formed. That intermediate set is then sorted (quicksort, 30 MB) to feed a
+  GroupAggregate, and the aggregate node alone accounts for ~1,340ms of the
+  ~1,455ms total.
+
+  The correctness consequence matters more than the speed. Because rows are
+  duplicated, COUNT(*) does NOT mean "number of encounters" - it counts
+  (diagnosis x procedure) pairings. The query uses COUNT(DISTINCT ed.encounter_id)
+  for that reason, which is right but forces the sort that makes it slow.
+
+  Two deliberate choices worth recording:
+  - INNER join to encounter_procedures. The 11,725 encounters with no procedure
+    (16.7%) are dropped, and that is correct here: an encounter with no procedure
+    has no diagnosis-procedure PAIR to contribute. This is not the missing-data
+    problem Q4 has.
+  - No tiebreaker on ORDER BY encounter_count DESC. With LIMIT 20 and 8 pairs
+    tied at the cut value of 140 for 7 remaining slots, the top-20 is genuinely
+    not unique - see notes on SQ2.

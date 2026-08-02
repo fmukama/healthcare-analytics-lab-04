@@ -222,7 +222,7 @@ CREATE TABLE fact_encounters (
     -- pre-computed analytics ----------------------------------------------
     is_inpatient          BOOLEAN       NOT NULL DEFAULT FALSE,
 
-    -- ⭐ The two highest-value columns in the schema. Q3's 30-day readmission
+    -- The two highest-value columns in the schema. Q3's 30-day readmission
     -- question is a SELF-JOIN on 600k rows in the OLTP model; here the answer
     -- is already computed, so Q3 degenerates into a GROUP BY over a boolean.
     -- The cost of pre-computing: this is DERIVED data. If the clinical

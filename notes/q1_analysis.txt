@@ -1,0 +1,29 @@
+Schema Analysis:
+  - Tables joined   : encounters, providers, specialties
+  - Number of joins : 2 (both INNER, and CHAINED - specialties is only reachable
+                      through providers)
+  - Rows scanned    : 70,075  (70,004 encounters + 63 providers + 8 specialties)
+  - Rows aggregated : 70,004 -> 576 output rows
+
+Bottleneck Identified:
+  Four separate costs, and only the first is the one people name.
+
+  1. An encounter does not know its own specialty. The label lives two hops away
+     (encounters -> providers -> specialties), so all 70,004 rows are pushed
+     through two joins just to attach one word. The joins themselves are cheap -
+     the plan hashes both small dimensions - but the chain is unavoidable.
+
+  2. The full table is read every time. There is no filter, so idx_encounter_date
+     is correctly ignored and the plan does a Seq Scan. An index helps you find a
+     few rows; this query wants all of them.
+
+  3. GROUP BY derives the month with date_trunc() per row - a function call on
+     every one of the 70,004 rows to produce 24 distinct values.
+
+  4. The real cost: COUNT(DISTINCT patient_id) cannot use a running counter, so
+     Postgres falls back to a GroupAggregate and must SORT all 70,004 rows on
+     four keys, including patient_id. The plan shows quicksort using 6,875 kB,
+     and the sort is 171ms of the query's ~190ms - roughly 90% of the total.
+
+  The shape of the waste: 70,004 rows sorted to produce 576. Everything expensive
+  here is recomputed identically on every single run.

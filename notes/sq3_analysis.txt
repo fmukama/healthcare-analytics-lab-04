@@ -1,0 +1,56 @@
+Comparison:
+  - OLTP  : 16711.261 ms   (sql/analysis/q3_readmission.sql)
+  - STAR  :     9.397 ms
+  - Improvement: 1778x faster
+  - Parity: proven identical (8 rows, both EXCEPT directions,
+            tests/12_parity_q3.sql), and the underlying flag proven row-by-row
+            against the OLTP self-join across all 70,004 encounters
+            (tests/14_readmission_flag.sql)
+
+Why it is faster:
+  The self-join was not optimised. It stopped existing.
+
+  is_readmit_30d is a boolean column computed once during the ETL. The question
+  "which specialty has the highest 30-day readmission rate" therefore becomes a
+  GROUP BY over a boolean, served by the partial index idx_fact_inpatient, which
+  covers only the ~12% of rows that are inpatient stays.
+
+  The buffer numbers make the point better than the milliseconds:
+
+      OLTP : 8,939,200 buffer hits   (~71 GB of logical reads, for 8 rows)
+      STAR :     1,028 buffer hits
+      ratio: 8,695x fewer pages touched
+
+  The OLTP query re-scanned encounters once per index stay because there is no
+  index on patient_id and the match is a date RANGE, which cannot be hashed. The
+  star query reads a narrow slice of one table.
+
+  This is the clearest example in the lab of what pre-aggregation actually buys.
+  Q1 and Q4 got faster by ~2x because their work was made cheaper. Q3 got 1778x
+  faster because its work was moved to load time and is not done at query time at
+  all. Those are different kinds of win, and blurring them would misrepresent the
+  result.
+
+The cost, stated honestly:
+  is_readmit_30d is DERIVED data. Three consequences:
+
+  1. If the clinical definition changes from 30 days to 45, this column must be
+     RELOADED. No query edit can fix it. days_to_next_encounter is stored beside
+     it precisely so the threshold stays auditable and re-derivable without
+     returning to the source.
+  2. It depends on the FUTURE. An inpatient stay discharged on Monday only
+     becomes a readmission when the return visit arrives, so an incremental load
+     must recompute already-loaded rows at least 30 days back, not just insert
+     new ones.
+  3. It can silently drift from the source definition. That is exactly why
+     tests/14 compares the flag row-by-row rather than trusting the 8 aggregated
+     rows in tests/12, where two opposite errors could cancel out. A fast,
+     confident, wrong answer is the failure mode this whole design invites.
+
+On the cohort translation:
+  Q3's index stays are `encounter_type = 'Inpatient' AND discharge_date IS NOT
+  NULL`. The star equivalent is `f.is_inpatient AND f.discharge_date_key <> -1`,
+  because the ETL maps a NULL discharge to the dim_date Unknown member. That
+  second predicate matches 0 rows today - every generated encounter has a
+  discharge date - but without it this stops being a translation of Q3 the moment
+  one open stay exists, and it would fail silently rather than loudly.
