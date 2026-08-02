@@ -1,0 +1,260 @@
+ DESIGN DECISIONS - Healthcare OLTP to Star Schema
+ Part 3.1
+*******************************************************
+
+Each decision below states what I chose, what I rejected, why, and what it
+cost me. A design decision with no downside usually means I haven't
+understood it yet.
+
+All figures come from the loaded dataset (70,004 encounters) and the EXPLAIN
+ANALYZE output in query_analysis.txt. Nothing here is estimated.
+
+
+------------------------------------------------------------------------------
+DECISION 0: Database engine
+------------------------------------------------------------------------------
+  Choice    : PostgreSQL 16
+  Rejected  : MySQL 8
+
+  The given DDL is MySQL-flavoured, so this is a deliberate deviation and
+  worth naming rather than doing quietly.
+
+  This lab is about measuring and proving. EXPLAIN (ANALYZE, BUFFERS) reports
+  actual rows and buffer counts per plan node, and EXCEPT lets me prove a
+  rewritten query returns the same rows as the original. The buffer counts
+  mattered more than I expected - Q3's bottleneck is invisible in the timing
+  alone but obvious at 8,939,200 buffer hits.
+
+  Cost: two mechanical edits. DATETIME became TIMESTAMP, and inline INDEX
+  clauses became separate CREATE INDEX statements.
+
+
+------------------------------------------------------------------------------
+DECISION 0b: Generating data volume
+------------------------------------------------------------------------------
+  Choice    : 70,000 synthetic encounters across 7,000 patients
+  Rejected  : the 4 sample encounters as-is; 600,000 encounters
+
+  Every query against the 4 sample rows runs in under a millisecond, so there
+  is no bottleneck to find and no improvement factor to compute. The sample
+  data also contains zero readmissions, so Q3 returns 0% for every specialty
+  whether my query is right or wrong.
+
+  Scale was chosen by measuring. Q3's self-join is quadratic:
+
+      encounters    7,000     30,000     60,000      600,000
+      Q3              83ms     1,412ms    5,556ms   >265,000ms
+
+  600k makes a full run a ~25 minute job. Below ~30k, Q1 and Q4 fall into
+  run-to-run jitter and any "N times faster" claim stops being defensible.
+
+  The 1:10 patient-to-encounter ratio is not cosmetic. Repeat visits are the
+  only reason a readmission exists; 70,000 encounters across 70,000 patients
+  would give one visit each and rebuild the zero-readmission problem.
+
+  Cost: the data is invented, so absolute milliseconds are machine-specific.
+  The relative comparison holds because the shape is realistic - 2.5
+  diagnoses and 1.5 procedures per encounter, 88% of encounters billed.
+
+
+------------------------------------------------------------------------------
+DECISION 1: Fact table grain
+------------------------------------------------------------------------------
+  Choice    : Option A - one row per encounter
+  Rejected  : B (one row per diagnosis), C (one row per procedure)
+
+      A  one row per encounter      70,004 rows
+      B  one row per diagnosis     175,024 rows
+      C  one row per procedure     104,955 rows
+
+  Option B breaks the money. At diagnosis grain each encounter's billing
+  repeats once per diagnosis, so SUM(total_allowed_amount) inflates by the
+  mean diagnosis count - about 2.5x, turning a true $139.6M into roughly
+  $349M. Nothing errors; the numbers are just quietly wrong.
+
+  Option C breaks it worse. 11,725 encounters (16.7%) have no procedure, so
+  at procedure grain they vanish entirely, taking their revenue and
+  readmissions with them. Silent data loss, not just double counting.
+
+  Option A matches the questions. All four aggregate at encounter level or
+  above, so there is zero de-duplication at query time and money stays
+  additive - the property that makes a fact table safe to hand to someone
+  else.
+
+  Cost: no single diagnosis or procedure code can live on the fact row. That
+  detail moves to bridges, and Q2 keeps a many-to-many join the other three
+  shed. This grain also cannot answer "average revenue per diagnosis" - that
+  is a different fact table.
+
+
+------------------------------------------------------------------------------
+DECISION 2: Dimension tables
+------------------------------------------------------------------------------
+  Seven dimensions. Surrogate *_key on each, source *_id kept for traceability.
+
+  dim_date            date_key (YYYYMMDD), year, quarter, month, month_name,
+                      year_month, day_of_month, day_of_week, is_weekend
+  dim_patient         patient_id, mrn, names, date_of_birth, gender
+  dim_specialty       specialty_id, specialty_name, specialty_code
+  dim_department      department_id, department_name, floor, capacity
+  dim_provider        provider_id, names, credential, and denormalized
+                      specialty_key/name + department_key/name
+  dim_encounter_type  type_name, is_inpatient, is_emergency
+  dim_diagnosis       icd10_code + description   } reached through bridges,
+  dim_procedure       cpt_code + description     } never from the fact
+
+  Smart date key: 20240510 rather than a sequence - readable in a plan, sorts
+  naturally. year_month is stored, so GROUP BY reads a column instead of
+  calling date_trunc() 70,004 times.
+
+  Dates role-play. An encounter has an admit and a discharge date; procedures
+  have their own. One date_key cannot carry all three, so the fact holds
+  admit_date_key and discharge_date_key and the procedures bridge holds
+  procedure_date_key, all pointing at the same dim_date.
+
+  No age_group in dim_patient. Age drifts, so an age band in a dimension
+  silently rewrites history on every reload - last year's report stops
+  reproducing. date_of_birth stays here; age_at_encounter goes on the fact,
+  where it is correct forever.
+
+  dim_provider is flattened, not snowflaked. specialty_name and
+  department_name are duplicated in even though both have their own
+  dimensions; snowflaking them back out rebuilds the join chain this exercise
+  exists to remove.
+
+  specialty_key sits directly on the fact. This is what collapses Q1 and Q4.
+  In the OLTP model an encounter does not know its own specialty - the
+  database walks encounters -> providers -> specialties for every row. On the
+  fact it is one hop, and dim_provider is never touched.
+
+  Cost: real duplication. specialty_name lives in three places and every ETL
+  run must keep them consistent. I traded that for removing a join from the
+  two most frequently run queries.
+
+
+------------------------------------------------------------------------------
+DECISION 3: Pre-aggregated metrics
+------------------------------------------------------------------------------
+  Computed once at load time, stored on the fact row:
+
+      diagnosis_count           removes a join to a 175,024-row junction
+      procedure_count           removes a join to a 104,955-row junction
+      claim_count               separates "unbilled" from "allowed zero"
+      total_claim_amount        billing drops out of Q4 entirely
+      total_allowed_amount      the measure Q4 actually asks for
+      length_of_stay_hours      computed once instead of per query
+      age_at_encounter          correct forever, unlike an age band
+      is_inpatient              integer flag beats a string comparison
+      is_readmit_30d            removes Q3's self-join
+      days_to_next_encounter    keeps the 30-day threshold auditable
+      encounter_count           always 1; keeps SUM() valid at any roll-up
+
+  is_readmit_30d is the one that matters. Q3 costs 10,791ms and 8,939,200
+  buffer hits because the correlated subquery re-scans encounters once per
+  index stay. Computing the flag during ETL turns the question into a GROUP
+  BY over a boolean - the self-join is not optimised, it stops existing.
+  days_to_next_encounter sits beside it so the 30-day threshold stays
+  auditable without returning to the source.
+
+  The principle: pre-aggregation moves cost from query time, paid by every
+  analyst on every run, to load time, paid once, off-hours.
+
+  Cost: the fact now holds derived data, which goes stale when definitions
+  change. If readmission moves to 45 days, the column must be reloaded - no
+  query edit fixes it. Incremental loads are also harder than they look: the
+  flag depends on the *next* encounter, so a stay loaded Monday may only
+  become a readmission when Thursday's visit arrives. Already-loaded rows
+  must be recomputed at least 30 days back.
+
+
+------------------------------------------------------------------------------
+DECISION 4: Bridge tables
+------------------------------------------------------------------------------
+  Choice    : Yes - bridge_encounter_diagnoses and bridge_encounter_procedures
+  Rejected  : repeating columns on the fact; changing the grain
+
+  Flattening into diagnosis_1 ... diagnosis_N is a repeating group. It breaks
+  the first time a patient has N+1 diagnoses, and "find every encounter with
+  code I10" becomes a scan of every column. Changing the grain instead is
+  Decision 1 option B, already rejected.
+
+  The bridge keeps full many-to-many detail, keeps the fact additive, and
+  confines the many-to-many join to the one query that needs code-level
+  detail. Q1, Q3 and Q4 never touch these tables. That containment is the
+  win, not the join itself.
+
+  The two bridges are keyed differently, on purpose:
+
+    diagnoses   PK (encounter_sk, diagnosis_key). The same ICD-10 code twice
+                in one encounter is a data entry error, not a clinical event,
+                so collapsing it is correct and the key surfaces it.
+
+    procedures  Surrogate bridge_sk with the source encounter_procedure_id as
+                a UNIQUE natural key. The same CPT code genuinely can occur
+                twice - two chest X-rays are two billable events. A composite
+                key would let ON CONFLICT DO NOTHING swallow the second, and
+                procedure_count would stop matching the bridge.
+
+  Cost: Q2 stays a many-to-many join. It gets faster - narrower tables,
+  integer keys, no hop through encounters - but it is the one query that does
+  not become trivial. In production the fix is a pre-built summary table,
+  which buys speed at the price of answering one question instead of any
+  question. Adding allocation_factor (1.0 / diagnosis_count) to the diagnosis
+  bridge would let revenue split across diagnoses without double counting -
+  Kimball's weighted bridge - but no query here needs it.
+
+
+------------------------------------------------------------------------------
+SUPPORTING DECISIONS
+------------------------------------------------------------------------------
+  Department on the fact is the encounter's, not the provider's. They
+  disagree for 9.3% of encounters and answer different questions: "where was
+  care delivered" versus "which unit does this clinician report to".
+
+  Unbilled is 0, not NULL. 8,406 encounters (12.0%) have no billing row.
+  These are additive measures and 0 is the truthful identity; NULL would make
+  AVG() skip the row rather than count it. claim_count keeps the cases
+  distinct - 0 means never billed, >0 with allowed 0 means allowed nothing.
+
+  Denied claims are excluded from revenue. 5,024 of 61,598 claims are Denied;
+  counting them overstates revenue at $151.8M against a truthful $139.6M.
+  Pending claims are kept, since allowed_amount is contractually agreed.
+  Nobody specified this - the point is that it is decided and written down.
+
+  Revenue is dated by encounter_date, not claim_date, so it lines up with
+  when care happened rather than when paperwork was filed weeks later.
+
+  Foreign keys are never NULL; unresolved lookups map to -1. A NULL FK drops
+  the row from every inner join, so bad data becomes invisible. A -1 Unknown
+  member keeps the row and makes the problem countable.
+
+  dim_encounter_type is a curated list, not SELECT DISTINCT. Sniffing the
+  fact table means 'ER' vanishes from reports in any period with no ER visits.
+
+  SCD Type 1 on all dimensions. Type 2 is sketched in the DDL comments but
+  not built, since no listed question asks an "as at the time" question. Cost:
+  a patient who changes surname reprints under the new name in last year's
+  report. Type 2 would also break the Q1 parity test - one patient would hold
+  several patient_keys and COUNT(DISTINCT patient_key) would inflate.
+
+  Indexes are required by the brief and useful, but they are not why the star
+  schema is faster. Q1's OLTP plan already ignores idx_encounter_date and
+  scans sequentially, because an index helps you find a few rows and these
+  queries read all of them. The speedup comes from fewer joins and
+  pre-computation. Indexes earn their place on selective slices and on
+  foreign key validation during load.
+
+
+------------------------------------------------------------------------------
+KNOWN LIMITATIONS
+------------------------------------------------------------------------------
+  The generator assigns providers at random, with no specialty-linked
+  readmission risk, so all eight specialties land between 30% and 34%. Q3's
+  ranking is noise, not signal. The ~32% baseline is itself an artifact of
+  uniform arrivals: ten visits over 730 days gives a ~73-day mean gap, so the
+  chance of a return inside 30 days is roughly 1 - e^(-30/73) = 34%, which is
+  what we measured. Real hospitals run 15-20%.
+
+  The volume generator is deliberately not idempotent - it inserts fixed ids
+  so the sample rows stay recognisable. It guards against a second run rather
+  than silently double-loading.

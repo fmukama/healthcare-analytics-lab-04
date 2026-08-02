@@ -1,0 +1,31 @@
+# =============================================================================
+# Line endings.
+#
+# This repo is developed on Windows (core.autocrlf=true) but every script and
+# SQL file is executed inside a Linux container. Without the rules below, git
+# hands out CRLF working copies on checkout and two things break:
+#
+#   *.sh      -> "bad interpreter: /usr/bin/env bash^M" the moment the
+#                container tries to run it
+#   Makefile  -> GNU Make passes the trailing \r to the shell and recipes fail
+#                with "$'\r': command not found"
+#
+# Both failures appear only after a fresh clone, which is exactly when someone
+# else (a marker, CI) runs the project. Pin everything to LF in the repository
+# so the checkout is identical on every platform.
+# =============================================================================
+* text=auto eol=lf
+
+# Called as executables inside the Linux container - CRLF is fatal, not cosmetic.
+*.sh      text eol=lf
+Makefile  text eol=lf
+
+# Read by psql inside the container. CRLF runs, but the stray \r is copied into
+# generated deliverables and breaks end-of-line matching in awk/sed.
+*.sql     text eol=lf
+
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+*.puml    text eol=lf
