@@ -1,0 +1,46 @@
+# Usage:
+#   cp .env.example .env      (once)
+#   make up                   (or: docker compose up -d --wait)
+
+services:
+  db:                                            # service name — also used as $(DB) in the Makefile
+    image: postgres:16                           # Debian-based image (not -alpine): we need bash/awk/sort inside it, alpine's busybox versions are missing features we rely on
+
+    container_name: hc_db                        # fixed, human-readable name instead of a random docker-generated one — makes `docker ps` / `docker logs hc_db` predictable
+
+    environment:                                 # these three env vars are how the OFFICIAL postgres image bootstraps a fresh database on first start
+      POSTGRES_USER:     ${PGUSER:-lab}           # ${VAR:-default} — read PGUSER from .env, fall back to "lab" if .env is missing/incomplete
+      POSTGRES_PASSWORD: ${PGPASSWORD:-lab}       # local lab password only; container is not exposed beyond localhost
+      POSTGRES_DB:       ${PGDATABASE:-healthcare} # the database name we'll connect to everywhere else (Makefile, scripts, tests)
+
+    ports:
+      - "${PGPORT:-55432}:5432"                   # "<host_port>:<container_port>" — Postgres always listens on 5432 INSIDE the container; we expose it on 55432 on your machine so it never collides with a Postgres already running natively on 5432
+
+    volumes:
+      - ./:/work                                  # bind-mount the ENTIRE repo into the container at /work — this is what lets `docker compose exec db psql -f /work/sql/...` see your SQL files, and what lets scripts/*.sh run against files you just edited, with no rebuild step
+      - pgdata:/var/lib/postgresql/data           # NAMED volume (declared below) for the actual database files — survives `docker compose down`, so `make down` (without -v) does not lose your loaded data
+
+    healthcheck:                                  # lets `docker compose up -d --wait` (used by `make up`) know when Postgres is actually ready to accept queries, not just "container started"
+      test: ["CMD-SHELL", "pg_isready -U ${PGUSER:-lab} -d ${PGDATABASE:-healthcare}"]  # runs INSIDE the container; pg_isready exits 0 only once the server accepts connections
+      interval: 2s                                # check every 2 seconds...
+      timeout: 3s                                 # ...give each check up to 3 seconds to respond...
+      retries: 40                                 # ...and allow up to 40 failures (~80s total) before giving up — first-ever start needs to initialize the data directory, which takes a few seconds
+
+    # Fixed tuning flags, appended to the normal `postgres` startup command.
+    # WHY THIS MATTERS: Part 2 vs Part 3 of the assignment is a PERFORMANCE
+    # COMPARISON. If Postgres's memory/IO settings changed between the OLTP
+    # run and the star-schema run, you'd be measuring the settings, not your
+    # schema design. Fixing them once here keeps the comparison honest.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=256MB      # RAM reserved for caching table/index pages; default (128MB) is conservative for a dev container doing full-table scans over 600k+ rows
+      - -c
+      - work_mem=64MB             # RAM allowed PER sort/hash operation (GROUP BY, DISTINCT, hash joins) before spilling to disk — our aggregation-heavy queries need this raised from the 4MB default
+      - -c
+      - max_wal_size=2GB          # write-ahead-log size before a forced checkpoint — raised so the big Phase 2 bulk INSERTs (100k+ rows at once) don't stall on checkpoint I/O mid-load
+      - -c
+      - track_io_timing=on        # turns on the I/O timing counters that EXPLAIN (ANALYZE, BUFFERS) reports — without this flag, "Buffers:" line has no timing detail, only counts
+
+volumes:
+  pgdata:                                          # declares the named volume referenced above; `docker volume ls` will show it as <project>_pgdata; deleted only by `make nuke` (docker compose down -v)

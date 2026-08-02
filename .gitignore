@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+out/
+logs/
+docs/rendered/
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+.vscode/
+.idea/
+docs/
