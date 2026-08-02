@@ -1,0 +1,217 @@
+ ETL DESIGN - OLTP to Star Schema
+ Part 3.4
+*******************************************************
+
+The ETL is where a star schema stops being a diagram and starts being faster.
+Nothing in fact_encounters can be SELECTed out of the OLTP database -
+is_readmit_30d, total_allowed_amount and diagnosis_count do not exist there.
+This load computes them once, off-hours, so no analyst ever pays for them
+again.
+
+Implemented in three files, run in order by `make etl`:
+    sql/etl/01_dims.sql      dimensions
+    sql/etl/02_fact.sql      fact_encounters
+    sql/etl/03_bridges.sql   both bridges
+
+Measured on the current dataset: 16 seconds for 70,004 fact rows, 175,024
+diagnosis bridge rows and 104,955 procedure bridge rows.
+
+
+------------------------------------------------------------------------------
+LOAD ORDER
+------------------------------------------------------------------------------
+    1. dim_date                one-time, generated, not extracted
+    2. Unknown members         key = -1 in every dimension
+    3. Independent dimensions  specialty, department, patient, encounter type,
+                               diagnosis, procedure
+    4. dim_provider            needs specialty_key and department_key
+    5. fact_encounters         needs every dimension key
+    6. Bridges                 need encounter_sk from the fact
+
+  Teardown reverses it. Getting this wrong makes the foreign keys reject the
+  load, which is exactly what foreign keys are for - a load that fails is
+  strictly better than one that half-succeeds.
+
+
+------------------------------------------------------------------------------
+1. DIMENSION LOAD
+------------------------------------------------------------------------------
+  Upsert, never truncate-and-reload. Every dimension is loaded with
+  INSERT ... ON CONFLICT (natural_key) DO UPDATE.
+
+  The reason is surrogate key stability. The fact table stores patient_key,
+  not patient_id. Truncating dim_patient and reloading would reassign those
+  keys, and every existing fact row would silently point at a different
+  patient. Nothing errors, every report is wrong. Conflicting on the natural
+  key means the surrogate assigned on the first load survives forever.
+
+  This also makes the step idempotent by construction. Verified: re-running
+  the whole ETL leaves all counts and all money identical.
+
+  SCD Type 1 (overwrite). No question in this brief asks "what was true at the
+  time", so history is not kept. Cost: a patient who changes surname reprints
+  under the new name in last year's report. Type 2 would mean valid_from /
+  valid_to / is_current columns and a unique key of (patient_id, valid_from) -
+  sketched in the DDL comments, not built.
+
+  dim_date is generated, not extracted. It covers 2023-2027, which brackets
+  the 2024-2025 encounter window on both sides so a late-arriving fact always
+  finds a date row. A missing date row would reject the fact load.
+
+  Unknown members first. Every dimension gets a key = -1 row before anything
+  else loads, so a failed lookup still produces a valid NOT NULL foreign key.
+  dim_provider's Unknown row is inserted after the specialty and department
+  Unknowns, because its own foreign keys have to resolve to something.
+
+  dim_encounter_type is a curated VALUES list, not SELECT DISTINCT off the
+  encounters table. Deriving reference data from facts means 'ER' disappears
+  from reports in any period containing no ER visits.
+
+  dim_provider loads last and uses LEFT JOIN + COALESCE(key, -1). A provider
+  with a broken department_id must still load: dropping the provider row here
+  would later drop every one of their encounters from the fact table.
+
+
+------------------------------------------------------------------------------
+2. FACT LOAD
+------------------------------------------------------------------------------
+  Three techniques, each preventing a specific silent bug.
+
+  TECHNIQUE 1 - aggregate the many-side first, in separate CTEs.
+  diagnosis_count, procedure_count and the billing measures are each computed
+  in their own CTE that returns one row per encounter, and only then LEFT
+  JOINed. Joining encounter_diagnoses and billing directly onto encounters and
+  aggregating afterwards is the fan trap: total_allowed_amount would be
+  multiplied by diagnosis_count, roughly 2.5x here. Aggregate first, join
+  second.
+      Verified: SUM(diagnosis_count) = 175,024 = COUNT(encounter_diagnoses)
+                SUM(total_allowed_amount) = $139,591,191.31, matching billing
+                exactly to the cent.
+
+  TECHNIQUE 2 - compute the readmission flag once.
+  For every encounter, a LATERAL finds the earliest subsequent encounter for
+  the same patient, and is_readmit_30d is set when that date falls within 30
+  days of discharge on an inpatient stay.
+
+  I chose this over LEAD(encounter_date) OVER (PARTITION BY patient_id ...).
+  LEAD is cheaper but wrong at the edges: it only inspects the immediately
+  next encounter, so an overlapping stay beginning before discharge masks a
+  later qualifying return. Correctness first, and the cost was recoverable.
+      Verified against the honest self-join, per specialty, all 8 matching
+      exactly - 8,493 index stays and 2,765 readmissions either way.
+
+  The lateral needs an index on (patient_id, encounter_date) to be affordable;
+  without one this is the same scan-per-row that makes Q3 cost 10.4s and 8.9M
+  buffer reads. The load builds a TEMP copy of encounters and indexes that,
+  rather than indexing public.encounters, for two reasons: it does not touch
+  the source system, and it cannot be left behind. An index accidentally left
+  on public.encounters would make a later Q3 run fast and silently invalidate
+  the entire OLTP-versus-star comparison. Temp objects are dropped at session
+  end even if the script fails.
+
+  That trade is the whole thesis in miniature: the warehouse can afford an
+  index the transactional system deliberately does not carry, because it pays
+  for it once, at night, instead of on every insert.
+
+  TECHNIQUE 3 - LEFT JOIN every dimension, COALESCE the key to -1.
+  An INNER JOIN would silently drop any encounter whose dimension lookup
+  failed. Dropping facts is the worst failure mode available: the numbers come
+  out wrong and nothing raises an error. LEFT + COALESCE keeps the row and
+  makes the defect countable with a single query.
+      Verified: 70,004 fact rows for 70,004 encounters, and 0 rows currently
+      resolve to any Unknown member.
+
+  Missing data policy. Unbilled encounters get 0, not NULL - these are
+  additive measures and 0 is the truthful identity, whereas NULL would make
+  AVG() skip the row instead of counting it. claim_count stays as the
+  discriminator: 13,430 rows have claim_count = 0, being the 8,406 encounters
+  never billed plus 5,024 whose only claim was denied. days_to_next_encounter
+  is the one column where NULL is correct, because "no subsequent visit" is a
+  real answer rather than a failed lookup.
+
+  The Denied-claim filter in the billing CTE must match Q4's WHERE clause
+  exactly. If they ever diverge the parity test fails - and the ETL is what is
+  wrong, not the test.
+
+  Grain is enforced by the database, not by hope. fact_encounters has a UNIQUE
+  constraint on encounter_id, so an ETL bug that fans rows out fails loudly at
+  load time instead of quietly doubling every number downstream.
+
+  Re-runs are upserts, and every measure appears in the DO UPDATE list. A
+  column omitted there is a bug that only appears on the SECOND load, as a
+  stale number nobody is looking for.
+
+
+------------------------------------------------------------------------------
+3. BRIDGE LOAD
+------------------------------------------------------------------------------
+  Runs after the fact, because both bridges need encounter_sk.
+
+  These use INNER JOIN while the fact load used LEFT JOIN everywhere. That is
+  not an inconsistency; it is a difference in what a missing parent means. A
+  fact row with an unresolvable patient is still a real encounter worth
+  counting, so it loads with patient_key = -1. A bridge row pointing at an
+  encounter that does not exist is not a partial record, it is garbage, and it
+  should be dropped.
+
+  bridge_encounter_diagnoses conflicts on (encounter_sk, diagnosis_key), so a
+  repeated ICD-10 code within one encounter collapses. That is correct: the
+  same diagnosis recorded twice for one visit is a data entry error, not a
+  second clinical event.
+
+  bridge_encounter_procedures conflicts on the source's own
+  encounter_procedure_id instead. The same CPT code can legitimately occur
+  twice in one encounter - two chest X-rays are two separately billable events
+  - so a composite key would swallow the second and procedure_count would stop
+  matching the bridge. Conflicting on the source row's identity preserves
+  every occurrence and still makes the load idempotent.
+      Verified: bridge rows equal the fact's stored counts exactly,
+      175,024 and 104,955, with 0 orphans.
+
+
+------------------------------------------------------------------------------
+4. REFRESH STRATEGY
+------------------------------------------------------------------------------
+  Cadence. Nightly batch, after the OLTP day closes. Analytics does not need
+  real-time data, and batch is cheaper and simpler to reason about than
+  streaming.
+
+  Full versus incremental. Dimensions are small - a few thousand rows - so a
+  full upsert every night is fine and avoids change-detection logic entirely.
+  The fact table is large and should load incrementally, filtered on
+  encounter_date >= (last load - 7 days) so recent corrections are picked up.
+
+  Late-arriving facts. Billing lands days after the encounter, so
+  total_allowed_amount changes after the fact row already exists. This is why
+  the fact load is an upsert rather than an insert, and why the lookback
+  window exists: an encounter loaded Monday with total_allowed_amount = 0 gets
+  corrected on Thursday when the claim posts. Roughly 12% of encounters are
+  unbilled at any moment, and some fraction of those are simply not billed
+  yet.
+
+  Late-arriving dimensions. A fact referencing a patient not yet in
+  dim_patient can either point at -1 and be re-resolved next run, or get an
+  inferred member - a dimension row carrying only the natural key, with
+  attributes filled in when the real record arrives. I would use the inferred
+  member in production, because -1 loses the link between the fact and the
+  patient it actually belongs to.
+
+  The readmission recompute window - the subtle one. is_readmit_30d depends on
+  the NEXT encounter, which may not exist yet when the row is first loaded. An
+  inpatient stay discharged on Monday only becomes a readmission when the
+  return visit arrives, possibly weeks later. So an incremental load cannot
+  only process new rows: it must recompute already-loaded rows at least 30
+  days back, and I would use 45 for safety. This is a direct and easily missed
+  consequence of pre-computing anything that depends on the future.
+
+  Idempotency. Every statement in all three files is ON CONFLICT, so a re-run
+  changes nothing. Verified by running the full ETL twice and comparing row
+  counts and total revenue - identical.
+
+  Watermark. Store last_loaded_at in a small audit table so incremental runs
+  know where to resume, rather than inferring it from max(load_ts) on the fact.
+
+  Failure handling. Each step runs under ON_ERROR_STOP so a failure aborts
+  rather than continuing with a half-loaded table. In production each step
+  would be wrapped in its own transaction: a stale warehouse is recoverable,
+  a half-loaded one quietly reports wrong numbers to the business.

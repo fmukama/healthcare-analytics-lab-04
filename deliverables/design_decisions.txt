@@ -211,10 +211,12 @@ SUPPORTING DECISIONS
   disagree for 9.3% of encounters and answer different questions: "where was
   care delivered" versus "which unit does this clinician report to".
 
-  Unbilled is 0, not NULL. 8,406 encounters (12.0%) have no billing row.
-  These are additive measures and 0 is the truthful identity; NULL would make
-  AVG() skip the row rather than count it. claim_count keeps the cases
-  distinct - 0 means never billed, >0 with allowed 0 means allowed nothing.
+  Unbilled is 0, not NULL. 8,406 encounters (12.0%) have no billing row at
+  all. These are additive measures and 0 is the truthful identity; NULL would
+  make AVG() skip the row rather than count it. Because the Denied filter is
+  applied during the load, claim_count = 0 means "no payable claim" and covers
+  two cases - never billed, or billed and wholly denied. That is 13,430 fact
+  rows: the 8,406 unbilled plus 5,024 whose only claim was denied.
 
   Denied claims are excluded from revenue. 5,024 of 61,598 claims are Denied;
   counting them overstates revenue at $151.8M against a truthful $139.6M.

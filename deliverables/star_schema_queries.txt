@@ -1,0 +1,39 @@
+==============================================================================
+ PART 3.3 - STAR SCHEMA QUERIES + PERFORMANCE COMPARISON
+==============================================================================
+
+Each query below answers the same business question as its OLTP
+counterpart in query_analysis.txt, and is proven to return identical
+rows by the parity tests in out/test_results.txt.
+
+QUESTION 1: (not run yet - no out/sq1.txt)
+  Run: make sq1
+
+QUESTION 2: (not run yet - no out/sq2.txt)
+  Run: make sq2
+
+QUESTION 3: (not run yet - no out/sq3.txt)
+  Run: make sq3
+
+QUESTION 4: (not run yet - no out/sq4.txt)
+  Run: make sq4
+
+==============================================================
+ PERFORMANCE COMPARISON  (median of 3 warm runs, same instance)
+==============================================================
+
+ WARNING: timings.csv holds more than one run for:
+          oltp,q1 x2
+          The most recent run of each is used below. If those runs
+          came from different dataset sizes, these ratios are
+          meaningless - run 'make clean' and re-measure.
+
+QUERY       OLTP (ms)      STAR (ms)     SPEEDUP
+--------------------------------------------------------------
+Q1            999.999            4.2      238.1x
+Q2                  -              -     not run
+Q3          10375.592            5.0     2075.1x
+Q4                  -              -     not run
+
+Absolute times are specific to this machine and this dataset size.
+The RATIO is the finding; the milliseconds are not portable.

@@ -11,4 +11,8 @@ Desktop.ini
 *.swp
 .vscode/
 .idea/
-docs/
+
+# NOTE: `docs/` used to be ignored wholesale here, which silently kept
+# guide.md, understanding.md and every .puml diagram out of the repository -
+# line 6 already ignores only the GENERATED renders, which is the intent.
+# Diagrams are referenced from the deliverables, so they have to be committed.

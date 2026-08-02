@@ -1,0 +1,168 @@
+@startuml 01-oltp-erd
+'==============================================================================
+' PART 1 : Normalized OLTP schema (3NF) - the source system
+'
+' 10 tables.
+' Read the crow's foot notation as:
+'    ||--o{   one (mandatory) to zero-or-many
+'    }o--||   zero-or-many to one (mandatory)
+'
+' The thing to LOOK for in this diagram: encounters does NOT know its own
+' specialty. Reaching a specialty label requires encounters -> providers ->
+' specialties. Two hops, on every row, for every analytical query.
+'==============================================================================
+title OLTP Schema (3NF) — HealthTech Analytics source system
+
+hide circle
+hide empty members
+skinparam linetype ortho
+skinparam shadowing false
+skinparam padding 3
+skinparam ArrowThickness 1.1
+skinparam entity {
+  BackgroundColor #FFFFFF
+  BorderColor #4A5568
+}
+
+' ---------------------------------------------------------------- reference data
+entity "specialties" as specialties #E8F4F8 {
+  * **specialty_id** : INT <<PK>>
+  --
+  specialty_name : VARCHAR(100)
+  specialty_code : VARCHAR(10)
+}
+
+entity "departments" as departments #E8F4F8 {
+  * **department_id** : INT <<PK>>
+  --
+  department_name : VARCHAR(100)
+  floor : INT
+  capacity : INT
+}
+
+entity "providers" as providers #E8F4F8 {
+  * **provider_id** : INT <<PK>>
+  --
+  first_name : VARCHAR(100)
+  last_name : VARCHAR(100)
+  credential : VARCHAR(20)
+  # specialty_id : INT <<FK>>
+  # department_id : INT <<FK>>
+}
+
+entity "patients" as patients #E8F4F8 {
+  * **patient_id** : INT <<PK>>
+  --
+  first_name : VARCHAR(100)
+  last_name : VARCHAR(100)
+  date_of_birth : DATE
+  gender : CHAR(1)
+  mrn : VARCHAR(20) <<UQ>>
+}
+
+entity "diagnoses" as diagnoses #E8F4F8 {
+  * **diagnosis_id** : INT <<PK>>
+  --
+  icd10_code : VARCHAR(10)
+  icd10_description : VARCHAR(200)
+}
+
+entity "procedures" as procedures #E8F4F8 {
+  * **procedure_id** : INT <<PK>>
+  --
+  cpt_code : VARCHAR(10)
+  cpt_description : VARCHAR(200)
+}
+
+' ------------------------------------------------------------------ event tables
+entity "encounters" as encounters #FFF4E0 {
+  * **encounter_id** : INT <<PK>>
+  --
+  # patient_id : INT <<FK>>
+  # provider_id : INT <<FK>>
+  # department_id : INT <<FK>>
+  encounter_type : VARCHAR(50)
+  encounter_date : TIMESTAMP  <<IX>>
+  discharge_date : TIMESTAMP
+}
+
+entity "billing" as billing #FFF4E0 {
+  * **billing_id** : INT <<PK>>
+  --
+  # encounter_id : INT <<FK>>
+  claim_amount : DECIMAL(12,2)
+  allowed_amount : DECIMAL(12,2)
+  claim_date : DATE  <<IX>>
+  claim_status : VARCHAR(50)
+}
+
+' -------------------------------------------------------------- junction tables
+entity "encounter_diagnoses" as ed #F0E8F8 {
+  * **encounter_diagnosis_id** : INT <<PK>>
+  --
+  # encounter_id : INT <<FK>>
+  # diagnosis_id : INT <<FK>>
+  diagnosis_sequence : INT
+}
+
+entity "encounter_procedures" as ep #F0E8F8 {
+  * **encounter_procedure_id** : INT <<PK>>
+  --
+  # encounter_id : INT <<FK>>
+  # procedure_id : INT <<FK>>
+  procedure_date : DATE
+}
+
+' ------------------------------------------------------------------ relationships
+specialties ||--o{ providers   : "1 specialty : N providers"
+departments ||--o{ providers   : "1 department : N providers"
+departments ||--o{ encounters  : "encounter happens in"
+patients    ||--o{ encounters  : "1 patient : N visits"
+providers   ||--o{ encounters  : "1 provider : N visits"
+
+encounters  ||--o{ ed          : "N diagnoses per visit"
+diagnoses   ||--o{ ed          : "code used in N visits"
+encounters  ||--o{ ep          : "N procedures per visit"
+procedures  ||--o{ ep          : "code used in N visits"
+encounters  ||--o{ billing     : "0..N claims"
+
+' note right of ed
+'   **Many-to-many, resolved**
+'   One visit -> many diagnoses
+'   One diagnosis code -> many visits
+
+'   Joining **both** junction tables to
+'   the same encounter produces a
+'   CROSS PRODUCT per encounter.
+'   That is Q2's row explosion.
+' end note
+
+' note bottom of encounters
+'   **The 2-hop problem**
+'   encounters has no specialty column.
+'   Every "by specialty" query must walk
+'   encounters -> providers -> specialties
+'   for all 600,000 rows, every time.
+
+'   Only 2 indexes exist in this schema:
+'   encounter_date and claim_date.
+'   Notably **no index on patient_id** —
+'   foreign keys do not create one.
+'   That is why Q3's self-join hurts.
+' end note
+
+' note top of billing
+'   ~12% of encounters have **no**
+'   billing row. INNER JOIN silently
+'   drops them from revenue reporting.
+'   Decide INNER vs LEFT deliberately.
+' end note
+
+legend bottom
+  |= colour |= role |= becomes in the star schema |
+  | <#E8F4F8> | reference / lookup | **dimension** tables |
+  | <#FFF4E0> | event (grows forever) | **fact** table + measures |
+  | <#F0E8F8> | junction (many-to-many) | **bridge** tables |
+endlegend
+
+@enduml
