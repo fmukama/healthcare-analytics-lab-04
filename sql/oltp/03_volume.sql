@@ -51,30 +51,37 @@ SELECT
     9999 + g AS encounter_id,
     2000 + (random() * (:n_patients - 1))::int AS patient_id,
     p.provider_id,
-    t.etype,
-    ts AS encounter_date,
-    ts + CASE t.etype
-           WHEN 'Inpatient' THEN (1 + random() * 9) * INTERVAL '1 day'
-           WHEN 'ER' THEN (2 + random() * 10) * INTERVAL '1 hour'
-           ELSE                  (0.5 + random() * 2) * INTERVAL '1 hour'
-         END AS discharge_date,
+    r.etype,
+    r.ts AS encounter_date,
+    r.ts + CASE r.etype
+             WHEN 'Inpatient' THEN (1 + random() * 9) * INTERVAL '1 day'
+             WHEN 'ER' THEN (2 + random() * 10) * INTERVAL '1 hour'
+             ELSE                  (0.5 + random() * 2) * INTERVAL '1 hour'
+           END AS discharge_date,
     -- 90% of the time the encounter happens in the provider's own department,
     -- 10% elsewhere. That 10% is deliberate: it forces you to decide WHICH
     -- department your fact table should attribute the encounter to.
     CASE WHEN random() < 0.90 THEN p.department_id ELSE 1 + (random() * 11)::int END
 FROM generate_series(1, :n_encounters) g
+-- ONE lateral, and it REFERENCES g. Both details are load-bearing:
+--   1. A lateral that does not reference g is uncorrelated, so the planner is
+--      free to evaluate it ONCE for the whole statement. Split across three
+--      laterals (as ts / etype / provider originally were), every encounter
+--      ends up with the same timestamp, the same type and the same provider.
+--   2. Picking the provider with `WHERE provider_id = <random expr>` re-draws
+--      random() for each provider row scanned, so the match count is itself
+--      random: 0 rows (~37%) collapses the whole join to INSERT 0 0, and 2+
+--      rows repeats g and violates encounters_pkey. Deriving the id
+--      arithmetically matches exactly one provider, every time.
 CROSS JOIN LATERAL (
-    SELECT TIMESTAMP '2024-01-01 00:00:00' + (random() * 730) * INTERVAL '1 day' AS ts
-) d
-CROSS JOIN LATERAL (
-    SELECT CASE WHEN random() < 0.70 THEN 'Outpatient'
-                WHEN random() < 0.60 THEN 'ER'
-                ELSE 'Inpatient' END AS etype
-) t
-CROSS JOIN LATERAL (
-    SELECT provider_id, department_id FROM providers
-    WHERE provider_id = 200 + (1 + (random() * 59)::int)
-) p;
+    SELECT
+        TIMESTAMP '2024-01-01 00:00:00' + (random() * 730) * INTERVAL '1 day' AS ts,
+        CASE WHEN random() < 0.70 THEN 'Outpatient'
+             WHEN random() < 0.60 THEN 'ER'
+             ELSE 'Inpatient' END AS etype,
+        201 + ((g + (random() * 59)::int) % 60) AS provider_pick -- providers are 201..260
+) r
+JOIN providers p ON p.provider_id = r.provider_pick;
 
 -- --- encounter_diagnoses (1..4 per encounter, mean 2.5) --------------------
 -- Trick: pick a random base code, then step by 13 (mod 60). gcd(13,60)=1, so
@@ -114,8 +121,11 @@ WHERE e.n > 0;
 INSERT INTO billing (billing_id, encounter_id, claim_amount, allowed_amount, claim_date, claim_status)
 SELECT 300000 + row_number() OVER (),
        e.encounter_id,
-       round(c.claim, 2),
-       round(c.claim * (0.55 + random() * 0.35), 2), -- insurer allows 55-90%
+       -- ::numeric is required: random() arithmetic yields double precision, and
+       -- Postgres only ships round(numeric, int) -- there is no two-argument
+       -- round() for double precision.
+       round(c.claim::numeric, 2),
+       round((c.claim * (0.55 + random() * 0.35))::numeric, 2), -- insurer allows 55-90%
        (e.encounter_date + (1 + random() * 20) * INTERVAL '1 day')::date,
        CASE WHEN random() < 0.80 THEN 'Paid'
             WHEN random() < 0.60 THEN 'Pending'
