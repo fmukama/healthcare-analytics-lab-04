@@ -7,10 +7,10 @@ to return identical answers.
 
 | Query | OLTP | Star | Speedup |
 |---|---|---|---|
-| Q1 Monthly encounters by specialty | 203.97 ms | 79.56 ms | 2.6× |
-| Q2 Top diagnosis-procedure pairs | 1,689.42 ms | 377.42 ms | 4.5× |
-| Q3 30-day readmission rate | 16,711.26 ms | 9.40 ms | **1,778×** |
-| Q4 Revenue by specialty & month | 93.22 ms | 42.47 ms | 2.2× |
+| Q1 Monthly encounters by specialty | 219.26 ms | 112.18 ms | 2.0× |
+| Q2 Top diagnosis-procedure pairs | 1,366.13 ms | 424.97 ms | 3.2× |
+| Q3 30-day readmission rate | 17,308.07 ms | 12.41 ms | **1,395×** |
+| Q4 Revenue by specialty & month | 104.72 ms | 33.28 ms | 3.1× |
 
 Measured on 70,004 synthetic encounters, median of 3 warm runs. Absolute times
 are machine-specific; the ratios are the finding.

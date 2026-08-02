@@ -20,8 +20,9 @@ Bottleneck Identified:
   aggregate's overhead is included.
 
   The plan shows the split cleanly: the joins and the index-stay scan finish in
-  ~507ms; the GroupAggregate node then runs from 2,720ms to 16,897ms. Roughly
-  14 seconds - 85% of the query - is spent evaluating the SubPlan.
+  well under a second; the GroupAggregate node then runs from 2,497ms to
+  17,196ms. Roughly 14.7 seconds - about 85% of the query - is spent evaluating
+  the SubPlan.
 
   Two structural reasons it cannot be fast in this schema:
 

@@ -9,10 +9,10 @@ the finding.
 
 | Query | OLTP | Star | Speedup |
 |---|---|---|---|
-| Q1 Monthly encounters by specialty | 203.97 ms | 79.56 ms | **2.6×** |
-| Q2 Top diagnosis-procedure pairs | 1,689.42 ms | 377.42 ms | **4.5×** |
-| Q3 30-day readmission rate | 16,711.26 ms | 9.40 ms | **1,778×** |
-| Q4 Revenue by specialty & month | 93.22 ms | 42.47 ms | **2.2×** |
+| Q1 Monthly encounters by specialty | 219.26 ms | 112.18 ms | **2.0×** |
+| Q2 Top diagnosis-procedure pairs | 1,366.13 ms | 424.97 ms | **3.2×** |
+| Q3 30-day readmission rate | 17,308.07 ms | 12.41 ms | **1,395×** |
+| Q4 Revenue by specialty & month | 104.72 ms | 33.28 ms | **3.1×** |
 
 Every one of those star queries is proven to return **identical rows** to its
 OLTP original — both `EXCEPT` directions, plus row counts and a non-vacuity
@@ -23,7 +23,7 @@ check, in `tests/10`–`13`. Fast and wrong is worth nothing.
 ## 1. Why is the star schema faster?
 
 Three separate mechanisms. They are worth naming separately, because the four
-queries benefit from very different ones and the spread from 2.2× to 1,778×
+queries benefit from very different ones and the spread from 2.0× to 1,395×
 makes no sense otherwise.
 
 **Fewer joins, and joins of a different shape.** Q4 goes from a four-table chain
@@ -50,7 +50,7 @@ aggregating on them is far cheaper than aggregating on a `VARCHAR(100)`.
 The headline is Q3, and it is a different kind of win from the others:
 
 ```
-Q3 buffer reads:   OLTP 8,939,200   →   STAR 1,028      (8,695× fewer pages)
+Q3 buffer reads:   OLTP 8,939,200   →   STAR 2,018      (4,430× fewer pages)
 ```
 
 Roughly 71 GB of logical reads to produce eight rows. The OLTP query re-scans
@@ -60,8 +60,9 @@ not do that work faster — **it does not do it at all**. The flag was computed
 during the ETL, so the self-join stopped existing.
 
 That distinction explains the whole table. Q1, Q2 and Q4 had their work made
-*cheaper*: 2–4×. Q3 had its work *eliminated*: 1,778×. Quoting an "average
-speedup" across the four would be meaningless.
+*cheaper*: 2–3×. Q3 had its work *eliminated*: 1,395×. Quoting an "average
+speedup" across the four would be meaningless — it would hide the only result
+that actually changes what the hospital can do.
 
 ### The finding I did not expect: the obvious rewrite was *slower*
 
@@ -82,7 +83,7 @@ Fixing it took two changes, both dimensional-modelling technique rather than
 tuning tricks: rewriting `COUNT(DISTINCT)` as a **two-level aggregation** so both
 levels can hash, and **joining the text-carrying dimensions after the
 aggregate** so the expensive `GROUP BY` runs on 4-byte keys instead of
-`VARCHAR(100)`. That got Q1 to 79 ms.
+`VARCHAR(100)`. That is what turned a loss into Q1's 2.0×.
 
 The lesson I actually take from this lab: *a star schema is a set of
 opportunities, not a guarantee.* A wider fact table can be slower than a
@@ -125,7 +126,7 @@ hand to someone who has not read the schema.
   30 days of already-loaded rows, not just insert new ones. That is a subtle,
   easily-missed consequence of pre-computing anything.
 
-**Was it worth it?** For this workload, yes, and Q3 alone settles it: 16.7
+**Was it worth it?** For this workload, yes, and Q3 alone settles it: 17.3
 seconds is not a query anyone runs interactively, and it scales *quadratically* —
 measured at 83 ms for 7,000 encounters, 1.4 s for 30,000, 5.6 s for 60,000, over
 265 s for 600,000. It does not merely run slowly today; it stops being viable as
@@ -153,7 +154,7 @@ diagnosis, inflating revenue by ~2.5× and turning a true \$139.6M into roughly
 \$349M. Nothing errors; the numbers are just quietly wrong.
 
 **The trade-off.** Q2 stays a many-to-many join and is the one query that does
-not become trivial — 4.5×, against Q3's 1,778×. But Q1, Q3 and Q4 never touch the
+not become trivial — 3.2×, against Q3's 1,395×. But Q1, Q3 and Q4 never touch the
 bridges at all. That is the actual win: the expensive relationship is confined to
 the only query that genuinely needs code-level detail, instead of being paid for
 by everything.
@@ -182,9 +183,9 @@ the second one and `procedure_count` would silently stop matching the bridge.
 **Q3 — 30-day readmission rate**
 
 ```
-Original  : 16,711.26 ms      8,939,200 buffer reads
-Optimized :      9.40 ms          1,028 buffer reads
-Improvement: 16711.26 / 9.40 = 1,778x
+Original  : 17,308.07 ms      8,939,200 buffer reads
+Optimized :     12.41 ms          2,018 buffer reads
+Improvement: 17308.07 / 12.41 = 1,395x
 ```
 
 *Main reason:* the work was eliminated, not accelerated. The correlated `EXISTS`
@@ -195,9 +196,9 @@ so the query became a `GROUP BY` over a boolean served by a partial index.
 **Q2 — Top diagnosis-procedure pairs**
 
 ```
-Original  : 1,689.42 ms      262,323 intermediate rows, 30 MB sort
-Optimized :   377.42 ms
-Improvement: 1689.42 / 377.42 = 4.5x
+Original  : 1,366.13 ms      262,323 intermediate rows, 30 MB sort
+Optimized :   424.97 ms
+Improvement: 1366.13 / 424.97 = 3.2x
 ```
 
 *Main reason:* three ordinary gains rather than one structural one — the hop
@@ -208,10 +209,12 @@ version needs a `GroupAggregate` fed by a sort of 262,323 rows. The row explosio
 itself (2.5 diagnoses × 1.5 procedures = 3.75 rows per encounter) does not go
 away — it is inherent to the question.
 
-**Q1 — 2.6×** and **Q4 — 2.2×** are the modest cases, and the reason is
-instructive: Q4's aggregation was *already* a `HashAggregate` even in 3NF,
-because `SUM` and `COUNT` need no sort. There was nothing to eliminate, only a
-join chain to shorten.
+**Q4 — 3.1×** and **Q1 — 2.0×** are the modest cases, and their ordering is
+instructive. Q4 gains more despite Q1 shedding an expensive sort, because Q4 had
+more to shed *structurally*: a whole table plus the longest join chain in the
+lab. Q1's remaining cost is a sort, and a sort can only be made cheaper, never
+abolished — which is precisely why Q3, where the work was abolished, is three
+orders of magnitude apart from both.
 
 ### On the honesty of these numbers
 

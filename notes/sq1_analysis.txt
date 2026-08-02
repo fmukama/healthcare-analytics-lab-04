@@ -1,7 +1,7 @@
 Comparison:
-  - OLTP  : 203.971 ms   (sql/analysis/q1_monthly_encounters.sql)
-  - STAR  :  79.559 ms
-  - Improvement: 2.6x faster
+  - OLTP  : 219.257 ms   (sql/analysis/q1_monthly_encounters.sql)
+  - STAR  : 112.177 ms
+  - Improvement: 2.0x faster
   - Parity: proven identical, both EXCEPT directions, 576 rows
             (tests/10_parity_q1.sql)
 
@@ -38,6 +38,8 @@ The honest part - the naive rewrite was SLOWER than the original:
     and a VARCHAR(50). This is the concrete reason surrogate keys are narrow
     integers, and it is worth more than the removed join.
 
-  Note the buffer count went UP, 653 to 2,023, and the query still got 2.6x
+  Note the buffer count went UP, 653 to 2,023, and the query still got 2.0x
   faster. Fewer pages read is not what made the difference; not sorting 70,004
-  rows is.
+  rows is. This is also the smallest speedup of the four, which is worth being
+  plain about: Q1's bottleneck was a sort, and a sort can only be made cheaper,
+  not abolished.

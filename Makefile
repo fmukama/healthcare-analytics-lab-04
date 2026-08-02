@@ -183,7 +183,13 @@ deliverables:
 # `all` is the one-command demo: wipes the database, rebuilds everything from
 # zero, and ends with the 6 graded files in deliverables/. Reproducibility over
 # speed — a grader (or future you) can trust the result came from nothing.
-all: nuke up oltp volume queries star etl test star-queries bench deliverables
+# `clean` first, and it is not cosmetic: out/timings.csv is APPENDED to by every
+# q%/sq% run, and bench.sh takes the last row per query. Without clean, a full
+# rebuild would silently mix its fresh timings with measurements taken against a
+# previous (possibly different-sized) database, and the speedup table would be
+# arithmetic on unrelated numbers. If `all` wipes the database for
+# reproducibility, it has to wipe the measurements taken against the old one too.
+all: clean nuke up oltp volume queries star etl test star-queries bench deliverables
 	@echo ""
 	@echo "=========================================="
 	@echo " DONE. See deliverables/ and out/"
