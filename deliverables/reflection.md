@@ -9,10 +9,10 @@ the finding.
 
 | Query | OLTP | Star | Speedup |
 |---|---|---|---|
-| Q1 Monthly encounters by specialty | 219.26 ms | 112.18 ms | **2.0×** |
-| Q2 Top diagnosis-procedure pairs | 1,366.13 ms | 424.97 ms | **3.2×** |
-| Q3 30-day readmission rate | 17,308.07 ms | 12.41 ms | **1,395×** |
-| Q4 Revenue by specialty & month | 104.72 ms | 33.28 ms | **3.1×** |
+| Q1 Monthly encounters by specialty | 121.89 ms | 59.79 ms | **2.0×** |
+| Q2 Top diagnosis-procedure pairs | 784.99 ms | 231.72 ms | **3.4×** |
+| Q3 30-day readmission rate | 8,781.83 ms | 6.72 ms | **1,307×** |
+| Q4 Revenue by specialty & month | 49.08 ms | 18.65 ms | **2.6×** |
 
 Every one of those star queries is proven to return **identical rows** to its
 OLTP original — both `EXCEPT` directions, plus row counts and a non-vacuity
@@ -23,7 +23,7 @@ check, in `tests/10`–`13`. Fast and wrong is worth nothing.
 ## 1. Why is the star schema faster?
 
 Three separate mechanisms. They are worth naming separately, because the four
-queries benefit from very different ones and the spread from 2.0× to 1,395×
+queries benefit from very different ones and the spread from 2.0× to 1,307×
 makes no sense otherwise.
 
 **Fewer joins, and joins of a different shape.** Q4 goes from a four-table chain
@@ -60,7 +60,7 @@ not do that work faster — **it does not do it at all**. The flag was computed
 during the ETL, so the self-join stopped existing.
 
 That distinction explains the whole table. Q1, Q2 and Q4 had their work made
-*cheaper*: 2–3×. Q3 had its work *eliminated*: 1,395×. Quoting an "average
+*cheaper*: 2–3×. Q3 had its work *eliminated*: 1,307×. Quoting an "average
 speedup" across the four would be meaningless — it would hide the only result
 that actually changes what the hospital can do.
 
@@ -126,7 +126,7 @@ hand to someone who has not read the schema.
   30 days of already-loaded rows, not just insert new ones. That is a subtle,
   easily-missed consequence of pre-computing anything.
 
-**Was it worth it?** For this workload, yes, and Q3 alone settles it: 17.3
+**Was it worth it?** For this workload, yes, and Q3 alone settles it: 8.8
 seconds is not a query anyone runs interactively, and it scales *quadratically* —
 measured at 83 ms for 7,000 encounters, 1.4 s for 30,000, 5.6 s for 60,000, over
 265 s for 600,000. It does not merely run slowly today; it stops being viable as
@@ -154,7 +154,7 @@ diagnosis, inflating revenue by ~2.5× and turning a true \$139.6M into roughly
 \$349M. Nothing errors; the numbers are just quietly wrong.
 
 **The trade-off.** Q2 stays a many-to-many join and is the one query that does
-not become trivial — 3.2×, against Q3's 1,395×. But Q1, Q3 and Q4 never touch the
+not become trivial — 3.4×, against Q3's 1,307×. But Q1, Q3 and Q4 never touch the
 bridges at all. That is the actual win: the expensive relationship is confined to
 the only query that genuinely needs code-level detail, instead of being paid for
 by everything.
@@ -183,9 +183,9 @@ the second one and `procedure_count` would silently stop matching the bridge.
 **Q3 — 30-day readmission rate**
 
 ```
-Original  : 17,308.07 ms      8,939,200 buffer reads
-Optimized :     12.41 ms          2,018 buffer reads
-Improvement: 17308.07 / 12.41 = 1,395x
+Original  : 8,781.83 ms      8,939,200 buffer reads
+Optimized :     6.72 ms          2,018 buffer reads
+Improvement: 8781.83 / 6.72 = 1,307x
 ```
 
 *Main reason:* the work was eliminated, not accelerated. The correlated `EXISTS`
@@ -196,9 +196,9 @@ so the query became a `GROUP BY` over a boolean served by a partial index.
 **Q2 — Top diagnosis-procedure pairs**
 
 ```
-Original  : 1,366.13 ms      262,323 intermediate rows, 30 MB sort
-Optimized :   424.97 ms
-Improvement: 1366.13 / 424.97 = 3.2x
+Original  : 784.99 ms      262,323 intermediate rows, 30 MB sort
+Optimized : 231.72 ms
+Improvement: 784.99 / 231.72 = 3.4x
 ```
 
 *Main reason:* three ordinary gains rather than one structural one — the hop
@@ -209,7 +209,7 @@ version needs a `GroupAggregate` fed by a sort of 262,323 rows. The row explosio
 itself (2.5 diagnoses × 1.5 procedures = 3.75 rows per encounter) does not go
 away — it is inherent to the question.
 
-**Q4 — 3.1×** and **Q1 — 2.0×** are the modest cases, and their ordering is
+**Q4 — 2.6×** and **Q1 — 2.0×** are the modest cases, and their ordering is
 instructive. Q4 gains more despite Q1 shedding an expensive sort, because Q4 had
 more to shed *structurally*: a whole table plus the longest join chain in the
 lab. Q1's remaining cost is a sort, and a sort can only be made cheaper, never
@@ -223,8 +223,27 @@ with a fixed seed. That does not invalidate the comparison: the shape and
 cardinality are realistic (2.5 diagnoses and 1.5 procedures per encounter, 88% of
 encounters billed, 12% inpatient), and both schemas were measured on the same
 data, same container, same tuning. What it does mean is that the milliseconds are
-not production numbers and should not be quoted as such. Run-to-run variance
-across passes was around ±20% on this machine.
+not production numbers and should not be quoted as such.
+
+I can put a number on that, because I ran the full pipeline three times on the
+same machine. Absolute times moved a great deal between runs — Q3 came out at
+17.3 s, 14.7 s and 8.8 s depending on machine load. **The ratios barely moved:**
+
+| | run 1 | run 2 | run 3 |
+|---|---|---|---|
+| Q1 | 2.0× | 2.0× | 2.0× |
+| Q2 | 3.2× | 3.5× | 3.4× |
+| Q3 | 1,395× | 1,367× | 1,307× |
+| Q4 | 3.1× | 3.1× | 2.6× |
+
+That is the empirical case for reporting ratios rather than milliseconds, and it
+is not something I assumed going in — I found it by re-running.
+
+Better still, the **buffer counts were byte-identical every time** (Q3: 8,939,200
+on all three runs), because pages touched is a function of the data and the plan,
+not of how busy the machine is. Where a claim can be made in buffers instead of
+milliseconds, it is the more honest unit — which is why Q3's headline above is
+stated both ways.
 
 One result I want to flag rather than let stand as a finding: Q3 reports
 readmission rates of 30–34% across all eight specialties, a spread of four

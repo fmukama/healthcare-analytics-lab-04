@@ -23,7 +23,7 @@ Bottleneck Identified:
   4. The real cost: COUNT(DISTINCT patient_id) cannot use a running counter, so
      Postgres falls back to a GroupAggregate and must SORT all 70,004 rows on
      four keys, including patient_id. The plan shows quicksort using 6,875 kB,
-     and the sort node runs from 171ms to 179ms of a ~219ms query - the single
+     and the sort node runs from 108ms to 114ms of a ~122ms query - the single
      dominant cost.
 
   The shape of the waste: 70,004 rows sorted to produce 576. Everything expensive

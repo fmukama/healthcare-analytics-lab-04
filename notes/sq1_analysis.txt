@@ -1,6 +1,6 @@
 Comparison:
-  - OLTP  : 219.257 ms   (sql/analysis/q1_monthly_encounters.sql)
-  - STAR  : 112.177 ms
+  - OLTP  : 121.887 ms   (sql/analysis/q1_monthly_encounters.sql)
+  - STAR  :  59.786 ms
   - Improvement: 2.0x faster
   - Parity: proven identical, both EXCEPT directions, 576 rows
             (tests/10_parity_q1.sql)

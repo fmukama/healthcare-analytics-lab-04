@@ -1,7 +1,7 @@
 Comparison:
-  - OLTP  : 104.717 ms   (sql/analysis/q4_revenue.sql)
-  - STAR  :  33.280 ms
-  - Improvement: 3.1x faster
+  - OLTP  : 49.077 ms   (sql/analysis/q4_revenue.sql)
+  - STAR  :  18.646 ms
+  - Improvement: 2.6x faster
   - Parity: proven identical, both EXCEPT directions, 192 rows
             (tests/13_parity_q4.sql)
 
@@ -16,12 +16,12 @@ Why it is faster:
   surrogate key instead of a VARCHAR(100), and the month comes from a stored
   column rather than a per-row date_trunc().
 
-  3.1x - the best of the three "made cheaper" queries, and slightly better than
-  Q1's 2.0x despite Q1 shedding a sort and this one not. The reason is that Q4
-  had the most to shed structurally: an entire table plus the longest join chain
-  in the lab. Its aggregation was already a HashAggregate even in 3NF, because
-  SUM and COUNT run with a running accumulator and need no sort, so nothing was
-  wasted there to begin with - the whole cost was the chain, and the chain is
+  2.6x, which is better than Q1's 2.0x even though Q1 sheds an expensive sort and
+  this query has none to shed. Q4 gains more because it had more to lose
+  structurally: an entire table plus the longest join chain in the lab. Its
+  aggregation was already a HashAggregate even in 3NF, since SUM and COUNT run
+  with a running accumulator and need no ordering - so nothing was being wasted
+  there to begin with. The whole cost was the chain, and the chain is exactly
   what the star schema removes.
 
 Two things that make this an exact translation rather than a near-enough one:

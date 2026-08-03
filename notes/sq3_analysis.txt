@@ -1,7 +1,7 @@
 Comparison:
-  - OLTP  : 17308.074 ms   (sql/analysis/q3_readmission.sql)
-  - STAR  :    12.405 ms
-  - Improvement: 1395x faster
+  - OLTP  : 8781.832 ms   (sql/analysis/q3_readmission.sql)
+  - STAR  :       6.718 ms
+  - Improvement: 1307x faster
   - Parity: proven identical (8 rows, both EXCEPT directions,
             tests/12_parity_q3.sql), and the underlying flag proven row-by-row
             against the OLTP self-join across all 70,004 encounters
@@ -27,7 +27,7 @@ Why it is faster:
 
   This is the clearest example in the lab of what pre-aggregation actually buys.
   Q1, Q2 and Q4 got faster by 2-3x because their work was made cheaper. Q3 got
-  1395x faster because its work was moved to load time and is not done at query
+  1307x faster because its work was moved to load time and is not done at query
   time at all. Those are different kinds of win, and blurring them into an
   "average speedup" would misrepresent both.
 

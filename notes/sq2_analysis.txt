@@ -1,7 +1,7 @@
 Comparison:
-  - OLTP  : 1366.131 ms   (sql/analysis/q2_dx_px_pairs.sql)
-  - STAR  :  424.966 ms
-  - Improvement: 3.2x faster
+  - OLTP  : 784.986 ms   (sql/analysis/q2_dx_px_pairs.sql)
+  - STAR  :  231.715 ms
+  - Improvement: 3.4x faster
   - Parity: proven identical over the FULL 2,400-pair result, both EXCEPT
             directions (tests/11_parity_q2.sql)
 
@@ -33,7 +33,7 @@ Why it is faster:
   true number of encounters.
 
 What this query does NOT get:
-  3.2x, against Q3's 1395x. The difference is instructive. Q3 had its work
+  3.4x, against Q3's 1307x. The difference is instructive. Q3 had its work
   ELIMINATED at load time; Q2 only had its work made cheaper. Any question that
   genuinely needs code-level detail has to touch the many-to-many, and no
   dimensional model removes that - it only confines it. Q1, Q3 and Q4 never touch

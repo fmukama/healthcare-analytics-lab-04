@@ -7,13 +7,15 @@ to return identical answers.
 
 | Query | OLTP | Star | Speedup |
 |---|---|---|---|
-| Q1 Monthly encounters by specialty | 219.26 ms | 112.18 ms | 2.0× |
-| Q2 Top diagnosis-procedure pairs | 1,366.13 ms | 424.97 ms | 3.2× |
-| Q3 30-day readmission rate | 17,308.07 ms | 12.41 ms | **1,395×** |
-| Q4 Revenue by specialty & month | 104.72 ms | 33.28 ms | 3.1× |
+| Q1 Monthly encounters by specialty | 121.89 ms | 59.79 ms | 2.0× |
+| Q2 Top diagnosis-procedure pairs | 784.99 ms | 231.72 ms | 3.4× |
+| Q3 30-day readmission rate | 8,781.83 ms | 6.72 ms | **1,307×** |
+| Q4 Revenue by specialty & month | 49.08 ms | 18.65 ms | 2.6× |
 
-Measured on 70,004 synthetic encounters, median of 3 warm runs. Absolute times
-are machine-specific; the ratios are the finding.
+Measured on 70,004 synthetic encounters, median of 3 warm runs. Absolute times are
+machine-specific — across three full pipeline runs Q3 varied from 8.8 s to 17.3 s
+— but the ratios held (Q1 stayed at 2.0× every time). **The ratios are the
+finding**; re-running will reproduce those, not the milliseconds.
 
 ## Running it
 
@@ -31,8 +33,9 @@ shell.
 `make all` rebuilds everything from an empty database: load the 3NF schema,
 generate 70k encounters, measure the four OLTP queries, build and load the star
 schema, run the test suite, measure the four rewrites, and assemble the
-deliverables. **It takes roughly 4–5 minutes**, most of it Q3 — the 16-second
-self-join is run five times, and that slowness is the point of the exercise.
+deliverables. **It takes roughly 2–4 minutes** depending on machine load, most of
+it Q3 — that self-join is run five times, and its slowness is the point of the
+exercise.
 
 `make help` lists every target. Useful individually:
 

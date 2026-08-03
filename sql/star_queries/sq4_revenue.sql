@@ -5,7 +5,7 @@
 -- `billing` does not appear in this query at all - total_allowed_amount is
 -- already a column on the fact. Q4's four-table chain
 -- (billing -> encounters -> providers -> specialties) becomes fact + 2 dims.
--- 66ms -> 36ms.
+-- See notes/sq4_analysis.txt for the measured comparison.
 --
 -- Two things make this an exact translation rather than a near-enough one.
 --

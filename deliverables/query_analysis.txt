@@ -53,47 +53,47 @@ Bottleneck Identified:
   4. The real cost: COUNT(DISTINCT patient_id) cannot use a running counter, so
      Postgres falls back to a GroupAggregate and must SORT all 70,004 rows on
      four keys, including patient_id. The plan shows quicksort using 6,875 kB,
-     and the sort node runs from 171ms to 179ms of a ~219ms query - the single
+     and the sort node runs from 108ms to 114ms of a ~122ms query - the single
      dominant cost.
 
   The shape of the waste: 70,004 rows sorted to produce 576. Everything expensive
   here is recomputed identically on every single run.
 
 Performance (measured):
-  - Median execution time : 219.257 ms   (1 discarded warm-up, median of 3)
-  - Final run reported    : 193.917 ms
+  - Median execution time : 121.887 ms   (1 discarded warm-up, median of 3)
+  - Final run reported    : 121.250 ms
   - Buffers: shared hit=653
 
 Query plan (EXPLAIN ANALYZE, BUFFERS):
-GroupAggregate  (cost=7806.51..9906.63 rows=70004 width=41) (actual time=171.185..193.183 rows=576 loops=1)
+GroupAggregate  (cost=7806.51..9906.63 rows=70004 width=41) (actual time=108.310..120.848 rows=576 loops=1)
   Group Key: ((date_trunc('month'::text, e.encounter_date))::date), s.specialty_name, e.encounter_type
   Buffers: shared hit=653
-  ->  Sort  (cost=7806.51..7981.52 rows=70004 width=29) (actual time=171.143..179.337 rows=70004 loops=1)
+  ->  Sort  (cost=7806.51..7981.52 rows=70004 width=29) (actual time=108.279..113.511 rows=70004 loops=1)
         Sort Key: ((date_trunc('month'::text, e.encounter_date))::date), s.specialty_name, e.encounter_type, e.patient_id
         Sort Method: quicksort  Memory: 6875kB
         Buffers: shared hit=653
-        ->  Hash Join  (cost=3.60..2172.88 rows=70004 width=29) (actual time=0.109..39.771 rows=70004 loops=1)
+        ->  Hash Join  (cost=3.60..2172.88 rows=70004 width=29) (actual time=0.048..25.239 rows=70004 loops=1)
               Hash Cond: (p.specialty_id = s.specialty_id)
               Buffers: shared hit=644
-              ->  Hash Join  (cost=2.42..1540.58 rows=70004 width=25) (actual time=0.064..21.104 rows=70004 loops=1)
+              ->  Hash Join  (cost=2.42..1540.58 rows=70004 width=25) (actual time=0.026..13.333 rows=70004 loops=1)
                     Hash Cond: (e.provider_id = p.provider_id)
                     Buffers: shared hit=643
-                    ->  Seq Scan on encounters e  (cost=0.00..1342.04 rows=70004 width=25) (actual time=0.005..6.393 rows=70004 loops=1)
+                    ->  Seq Scan on encounters e  (cost=0.00..1342.04 rows=70004 width=25) (actual time=0.004..4.486 rows=70004 loops=1)
                           Buffers: shared hit=642
-                    ->  Hash  (cost=1.63..1.63 rows=63 width=8) (actual time=0.041..0.042 rows=63 loops=1)
+                    ->  Hash  (cost=1.63..1.63 rows=63 width=8) (actual time=0.010..0.016 rows=63 loops=1)
                           Buckets: 1024  Batches: 1  Memory Usage: 11kB
                           Buffers: shared hit=1
-                          ->  Seq Scan on providers p  (cost=0.00..1.63 rows=63 width=8) (actual time=0.023..0.029 rows=63 loops=1)
+                          ->  Seq Scan on providers p  (cost=0.00..1.63 rows=63 width=8) (actual time=0.002..0.006 rows=63 loops=1)
                                 Buffers: shared hit=1
-              ->  Hash  (cost=1.08..1.08 rows=8 width=16) (actual time=0.018..0.020 rows=8 loops=1)
+              ->  Hash  (cost=1.08..1.08 rows=8 width=16) (actual time=0.010..0.014 rows=8 loops=1)
                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                     Buffers: shared hit=1
-                    ->  Seq Scan on specialties s  (cost=0.00..1.08 rows=8 width=16) (actual time=0.008..0.010 rows=8 loops=1)
+                    ->  Seq Scan on specialties s  (cost=0.00..1.08 rows=8 width=16) (actual time=0.003..0.006 rows=8 loops=1)
                           Buffers: shared hit=1
 Planning:
-  Buffers: shared hit=217
-Planning Time: 0.951 ms
-Execution Time: 193.917 ms
+  Buffers: shared hit=219
+Planning Time: 0.572 ms
+Execution Time: 121.250 ms
 
 
 ------------------------------------------------------------------------------
@@ -172,54 +172,54 @@ Bottleneck Identified:
     not unique - see notes on SQ2.
 
 Performance (measured):
-  - Median execution time : 1366.131 ms   (1 discarded warm-up, median of 3)
-  - Final run reported    : 1307.425 ms
+  - Median execution time : 784.986 ms   (1 discarded warm-up, median of 3)
+  - Final run reported    : 779.556 ms
   - Buffers: shared hit=1526
 
 Query plan (EXPLAIN ANALYZE, BUFFERS):
-Limit  (cost=41302.90..41302.95 rows=20 width=44) (actual time=1305.904..1305.914 rows=20 loops=1)
+Limit  (cost=41613.47..41613.52 rows=20 width=44) (actual time=778.656..778.664 rows=20 loops=1)
   Buffers: shared hit=1526
-  ->  Sort  (cost=41302.90..41308.90 rows=2400 width=44) (actual time=1305.902..1305.910 rows=20 loops=1)
+  ->  Sort  (cost=41613.47..41619.47 rows=2400 width=44) (actual time=778.654..778.660 rows=20 loops=1)
         Sort Key: (count(DISTINCT ed.encounter_id)) DESC
         Sort Method: top-N heapsort  Memory: 27kB
         Buffers: shared hit=1526
-        ->  GroupAggregate  (cost=36822.22..41239.04 rows=2400 width=44) (actual time=1207.944..1305.232 rows=2400 loops=1)
+        ->  GroupAggregate  (cost=37094.92..41549.60 rows=2400 width=44) (actual time=714.617..778.230 rows=2400 loops=1)
               Group Key: d.icd10_code, d.icd10_description, pr.cpt_code, pr.cpt_description
               Buffers: shared hit=1523
-              ->  Sort  (cost=36822.22..37554.35 rows=292855 width=40) (actual time=1207.891..1244.868 rows=262323 loops=1)
+              ->  Sort  (cost=37094.92..37833.37 rows=295379 width=40) (actual time=714.579..744.378 rows=262323 loops=1)
                     Sort Key: d.icd10_code, d.icd10_description, pr.cpt_code, pr.cpt_description, ed.encounter_id
                     Sort Method: quicksort  Memory: 30653kB
                     Buffers: shared hit=1523
-                    ->  Hash Join  (cost=3238.44..10231.24 rows=292855 width=40) (actual time=57.584..170.840 rows=262323 loops=1)
+                    ->  Hash Join  (cost=3238.44..10256.48 rows=295379 width=40) (actual time=32.176..105.126 rows=262323 loops=1)
                           Hash Cond: (ed.encounter_id = ep.encounter_id)
                           Buffers: shared hit=1517
-                          ->  Hash Join  (cost=2.35..3191.48 rows=175024 width=22) (actual time=0.060..51.181 rows=175024 loops=1)
+                          ->  Hash Join  (cost=2.35..3191.48 rows=175024 width=22) (actual time=0.034..29.781 rows=175024 loops=1)
                                 Hash Cond: (ed.diagnosis_id = d.diagnosis_id)
                                 Buffers: shared hit=948
-                                ->  Seq Scan on encounter_diagnoses ed  (cost=0.00..2697.24 rows=175024 width=8) (actual time=0.008..15.685 rows=175024 loops=1)
+                                ->  Seq Scan on encounter_diagnoses ed  (cost=0.00..2697.24 rows=175024 width=8) (actual time=0.005..10.041 rows=175024 loops=1)
                                       Buffers: shared hit=947
-                                ->  Hash  (cost=1.60..1.60 rows=60 width=22) (actual time=0.034..0.036 rows=60 loops=1)
+                                ->  Hash  (cost=1.60..1.60 rows=60 width=22) (actual time=0.019..0.020 rows=60 loops=1)
                                       Buckets: 1024  Batches: 1  Memory Usage: 12kB
                                       Buffers: shared hit=1
-                                      ->  Seq Scan on diagnoses d  (cost=0.00..1.60 rows=60 width=22) (actual time=0.004..0.012 rows=60 loops=1)
+                                      ->  Seq Scan on diagnoses d  (cost=0.00..1.60 rows=60 width=22) (actual time=0.002..0.006 rows=60 loops=1)
                                             Buffers: shared hit=1
-                          ->  Hash  (cost=1924.15..1924.15 rows=104955 width=22) (actual time=56.762..56.764 rows=104955 loops=1)
+                          ->  Hash  (cost=1924.15..1924.15 rows=104955 width=22) (actual time=31.732..31.734 rows=104955 loops=1)
                                 Buckets: 131072  Batches: 1  Memory Usage: 6620kB
                                 Buffers: shared hit=569
-                                ->  Hash Join  (cost=1.90..1924.15 rows=104955 width=22) (actual time=0.061..30.639 rows=104955 loops=1)
+                                ->  Hash Join  (cost=1.90..1924.15 rows=104955 width=22) (actual time=0.028..16.246 rows=104955 loops=1)
                                       Hash Cond: (ep.procedure_id = pr.procedure_id)
                                       Buffers: shared hit=569
-                                      ->  Seq Scan on encounter_procedures ep  (cost=0.00..1617.55 rows=104955 width=8) (actual time=0.010..9.132 rows=104955 loops=1)
+                                      ->  Seq Scan on encounter_procedures ep  (cost=0.00..1617.55 rows=104955 width=8) (actual time=0.005..5.092 rows=104955 loops=1)
                                             Buffers: shared hit=568
-                                      ->  Hash  (cost=1.40..1.40 rows=40 width=22) (actual time=0.025..0.026 rows=40 loops=1)
+                                      ->  Hash  (cost=1.40..1.40 rows=40 width=22) (actual time=0.011..0.011 rows=40 loops=1)
                                             Buckets: 1024  Batches: 1  Memory Usage: 11kB
                                             Buffers: shared hit=1
-                                            ->  Seq Scan on procedures pr  (cost=0.00..1.40 rows=40 width=22) (actual time=0.005..0.011 rows=40 loops=1)
+                                            ->  Seq Scan on procedures pr  (cost=0.00..1.40 rows=40 width=22) (actual time=0.002..0.004 rows=40 loops=1)
                                                   Buffers: shared hit=1
 Planning:
   Buffers: shared hit=217
-Planning Time: 1.079 ms
-Execution Time: 1307.425 ms
+Planning Time: 0.507 ms
+Execution Time: 779.556 ms
 
 
 ------------------------------------------------------------------------------
@@ -295,8 +295,8 @@ Bottleneck Identified:
   aggregate's overhead is included.
 
   The plan shows the split cleanly: the joins and the index-stay scan finish in
-  well under a second; the GroupAggregate node then runs from 2,497ms to
-  17,196ms. Roughly 14.7 seconds - about 85% of the query - is spent evaluating
+  well under a second; the GroupAggregate node then runs from 1,269ms to
+  9,380ms. Roughly 8.1 seconds - about 92% of the query - is spent evaluating
   the SubPlan.
 
   Two structural reasons it cannot be fast in this schema:
@@ -326,70 +326,70 @@ Bottleneck Identified:
   - Strictly `>` discharge_date, so a same-day transfer is not a readmission.
 
 Performance (measured):
-  - Median execution time : 17308.074 ms   (1 discarded warm-up, median of 3)
-  - Final run reported    : 17218.677 ms
+  - Median execution time : 8781.832 ms   (1 discarded warm-up, median of 3)
+  - Final run reported    : 9397.714 ms
   - Buffers: shared hit=8939200
 
 Query plan (EXPLAIN ANALYZE, BUFFERS):
-Sort  (cost=10008975.27..10008975.29 rows=8 width=60) (actual time=17196.090..17196.098 rows=8 loops=1)
+Sort  (cost=9787102.31..9787102.33 rows=8 width=60) (actual time=9380.114..9380.119 rows=8 loops=1)
   Sort Key: (round(((100.0 * (sum(CASE WHEN (SubPlan 2) THEN 1 ELSE 0 END))::numeric) / (NULLIF(count(*), 0))::numeric), 2)) DESC
   Sort Method: quicksort  Memory: 25kB
   Buffers: shared hit=8939200
-  ->  GroupAggregate  (cost=2142.49..10008975.15 rows=8 width=60) (actual time=2496.837..17196.016 rows=8 loops=1)
+  ->  GroupAggregate  (cost=2127.34..9787102.19 rows=8 width=60) (actual time=1269.308..9380.059 rows=8 loops=1)
         Group Key: s.specialty_name
         Buffers: shared hit=8939197
-        ->  Sort  (cost=2142.49..2164.02 rows=8615 width=28) (actual time=606.256..615.432 rows=8493 loops=1)
+        ->  Sort  (cost=2127.34..2148.40 rows=8424 width=28) (actual time=323.907..329.580 rows=8493 loops=1)
               Sort Key: s.specialty_name
               Sort Method: quicksort  Memory: 857kB
               Buffers: shared hit=647
-              ->  Hash Join  (cost=3.60..1579.38 rows=8615 width=28) (actual time=593.168..602.369 rows=8493 loops=1)
+              ->  Hash Join  (cost=3.60..1578.08 rows=8424 width=28) (actual time=316.255..321.851 rows=8493 loops=1)
                     Hash Cond: (p.specialty_id = s.specialty_id)
                     Buffers: shared hit=644
-                    ->  Hash Join  (cost=2.42..1543.61 rows=8615 width=20) (actual time=0.097..7.641 rows=8493 loops=1)
+                    ->  Hash Join  (cost=2.42..1543.07 rows=8424 width=20) (actual time=0.043..4.545 rows=8493 loops=1)
                           Hash Cond: (e.provider_id = p.provider_id)
                           Buffers: shared hit=643
-                          ->  Seq Scan on encounters e  (cost=0.00..1517.05 rows=8615 width=20) (actual time=0.043..6.064 rows=8493 loops=1)
+                          ->  Seq Scan on encounters e  (cost=0.00..1517.05 rows=8424 width=20) (actual time=0.017..3.687 rows=8493 loops=1)
                                 Filter: ((discharge_date IS NOT NULL) AND ((encounter_type)::text = 'Inpatient'::text))
                                 Rows Removed by Filter: 61511
                                 Buffers: shared hit=642
-                          ->  Hash  (cost=1.63..1.63 rows=63 width=8) (actual time=0.032..0.033 rows=63 loops=1)
+                          ->  Hash  (cost=1.63..1.63 rows=63 width=8) (actual time=0.015..0.016 rows=63 loops=1)
                                 Buckets: 1024  Batches: 1  Memory Usage: 11kB
                                 Buffers: shared hit=1
-                                ->  Seq Scan on providers p  (cost=0.00..1.63 rows=63 width=8) (actual time=0.011..0.018 rows=63 loops=1)
+                                ->  Seq Scan on providers p  (cost=0.00..1.63 rows=63 width=8) (actual time=0.005..0.009 rows=63 loops=1)
                                       Buffers: shared hit=1
-                    ->  Hash  (cost=1.08..1.08 rows=8 width=16) (actual time=593.044..593.044 rows=8 loops=1)
+                    ->  Hash  (cost=1.08..1.08 rows=8 width=16) (actual time=316.198..316.198 rows=8 loops=1)
                           Buckets: 1024  Batches: 1  Memory Usage: 9kB
                           Buffers: shared hit=1
-                          ->  Seq Scan on specialties s  (cost=0.00..1.08 rows=8 width=16) (actual time=593.000..593.006 rows=8 loops=1)
+                          ->  Seq Scan on specialties s  (cost=0.00..1.08 rows=8 width=16) (actual time=316.179..316.183 rows=8 loops=1)
                                 Buffers: shared hit=1
         SubPlan 1
-          ->  Bitmap Heap Scan on encounters e2  (cost=11.80..580.77 rows=1 width=0) (actual time=0.997..0.997 rows=0 loops=8493)
+          ->  Bitmap Heap Scan on encounters e2  (cost=11.80..580.77 rows=1 width=0) (actual time=0.562..0.562 rows=0 loops=8493)
                 Recheck Cond: ((encounter_date > e.discharge_date) AND (encounter_date <= (e.discharge_date + '30 days'::interval)))
                 Filter: ((encounter_id <> e.encounter_id) AND (patient_id = e.patient_id))
                 Rows Removed by Filter: 2293
                 Heap Blocks: exact=4359682
                 Buffers: shared hit=4469275
-                ->  Bitmap Index Scan on idx_encounter_date  (cost=0.00..11.79 rows=350 width=0) (actual time=0.230..0.230 rows=2797 loops=8493)
+                ->  Bitmap Index Scan on idx_encounter_date  (cost=0.00..11.79 rows=350 width=0) (actual time=0.121..0.121 rows=2797 loops=8493)
                       Index Cond: ((encounter_date > e.discharge_date) AND (encounter_date <= (e.discharge_date + '30 days'::interval)))
                       Buffers: shared hit=109593
         SubPlan 2
-          ->  Bitmap Heap Scan on encounters e2_1  (cost=11.80..580.77 rows=1 width=0) (actual time=0.939..0.939 rows=0 loops=8493)
+          ->  Bitmap Heap Scan on encounters e2_1  (cost=11.80..580.77 rows=1 width=0) (actual time=0.495..0.495 rows=0 loops=8493)
                 Recheck Cond: ((encounter_date > e.discharge_date) AND (encounter_date <= (e.discharge_date + '30 days'::interval)))
                 Filter: ((encounter_id <> e.encounter_id) AND (patient_id = e.patient_id))
                 Rows Removed by Filter: 2293
                 Heap Blocks: exact=4359682
                 Buffers: shared hit=4469275
-                ->  Bitmap Index Scan on idx_encounter_date  (cost=0.00..11.79 rows=350 width=0) (actual time=0.226..0.226 rows=2797 loops=8493)
+                ->  Bitmap Index Scan on idx_encounter_date  (cost=0.00..11.79 rows=350 width=0) (actual time=0.117..0.117 rows=2797 loops=8493)
                       Index Cond: ((encounter_date > e.discharge_date) AND (encounter_date <= (e.discharge_date + '30 days'::interval)))
                       Buffers: shared hit=109593
 Planning:
-  Buffers: shared hit=303
-Planning Time: 1.550 ms
+  Buffers: shared hit=305
+Planning Time: 0.579 ms
 JIT:
   Functions: 52
   Options: Inlining true, Optimization true, Expressions true, Deforming true
-  Timing: Generation 1.943 ms, Inlining 97.014 ms, Optimization 286.961 ms, Emission 209.195 ms, Total 595.112 ms
-Execution Time: 17218.677 ms
+  Timing: Generation 1.147 ms, Inlining 53.825 ms, Optimization 157.516 ms, Emission 104.934 ms, Total 317.422 ms
+Execution Time: 9397.714 ms
 
 
 ------------------------------------------------------------------------------
@@ -469,50 +469,50 @@ Bottleneck Identified:
      encounter", which is a different question needing a LEFT JOIN and COALESCE.
 
 Performance (measured):
-  - Median execution time : 104.717 ms   (1 discarded warm-up, median of 3)
-  - Final run reported    : 133.294 ms
+  - Median execution time : 49.077 ms   (1 discarded warm-up, median of 3)
+  - Final run reported    : 46.055 ms
   - Buffers: shared hit=1161
 
 Query plan (EXPLAIN ANALYZE, BUFFERS):
-Sort  (cost=10339.19..10480.55 rows=56541 width=56) (actual time=130.739..130.769 rows=192 loops=1)
+Sort  (cost=10350.47..10492.05 rows=56629 width=56) (actual time=45.309..45.320 rows=192 loops=1)
   Sort Key: (sum(b.allowed_amount)) DESC
   Sort Method: quicksort  Memory: 36kB
   Buffers: shared hit=1161
-  ->  HashAggregate  (cost=4886.66..5876.13 rows=56541 width=56) (actual time=130.119..130.489 rows=192 loops=1)
+  ->  HashAggregate  (cost=4888.82..5879.82 rows=56629 width=56) (actual time=45.090..45.238 rows=192 loops=1)
         Group Key: (date_trunc('month'::text, e.encounter_date))::date, s.specialty_name
         Batches: 1  Memory Usage: 1681kB
         Buffers: shared hit=1158
-        ->  Hash Join  (cost=2220.69..4321.25 rows=56541 width=23) (actual time=37.715..107.199 rows=56574 loops=1)
+        ->  Hash Join  (cost=2220.69..4322.53 rows=56629 width=23) (actual time=11.034..36.466 rows=56574 loops=1)
               Hash Cond: (p.specialty_id = s.specialty_id)
               Buffers: shared hit=1158
-              ->  Hash Join  (cost=2219.51..3810.31 rows=56541 width=19) (actual time=37.628..85.802 rows=56574 loops=1)
+              ->  Hash Join  (cost=2219.51..3810.80 rows=56629 width=19) (actual time=11.011..28.017 rows=56574 loops=1)
                     Hash Cond: (e.provider_id = p.provider_id)
                     Buffers: shared hit=1157
-                    ->  Hash Join  (cost=2217.09..3649.50 rows=56541 width=19) (actual time=37.532..72.850 rows=56574 loops=1)
+                    ->  Hash Join  (cost=2217.09..3649.73 rows=56629 width=19) (actual time=10.989..22.824 rows=56574 loops=1)
                           Hash Cond: (b.encounter_id = e.encounter_id)
                           Buffers: shared hit=1156
-                          ->  Seq Scan on billing b  (cost=0.00..1283.97 rows=56541 width=11) (actual time=0.011..11.593 rows=56574 loops=1)
+                          ->  Seq Scan on billing b  (cost=0.00..1283.97 rows=56629 width=11) (actual time=0.004..4.511 rows=56574 loops=1)
                                 Filter: ((claim_status)::text <> 'Denied'::text)
                                 Rows Removed by Filter: 5024
                                 Buffers: shared hit=514
-                          ->  Hash  (cost=1342.04..1342.04 rows=70004 width=16) (actual time=36.195..36.196 rows=70004 loops=1)
+                          ->  Hash  (cost=1342.04..1342.04 rows=70004 width=16) (actual time=10.658..10.659 rows=70004 loops=1)
                                 Buckets: 131072  Batches: 1  Memory Usage: 4306kB
                                 Buffers: shared hit=642
-                                ->  Seq Scan on encounters e  (cost=0.00..1342.04 rows=70004 width=16) (actual time=0.023..12.595 rows=70004 loops=1)
+                                ->  Seq Scan on encounters e  (cost=0.00..1342.04 rows=70004 width=16) (actual time=0.002..4.128 rows=70004 loops=1)
                                       Buffers: shared hit=642
-                    ->  Hash  (cost=1.63..1.63 rows=63 width=8) (actual time=0.066..0.071 rows=63 loops=1)
+                    ->  Hash  (cost=1.63..1.63 rows=63 width=8) (actual time=0.011..0.013 rows=63 loops=1)
                           Buckets: 1024  Batches: 1  Memory Usage: 11kB
                           Buffers: shared hit=1
-                          ->  Seq Scan on providers p  (cost=0.00..1.63 rows=63 width=8) (actual time=0.012..0.029 rows=63 loops=1)
+                          ->  Seq Scan on providers p  (cost=0.00..1.63 rows=63 width=8) (actual time=0.002..0.005 rows=63 loops=1)
                                 Buffers: shared hit=1
-              ->  Hash  (cost=1.08..1.08 rows=8 width=16) (actual time=0.044..0.045 rows=8 loops=1)
+              ->  Hash  (cost=1.08..1.08 rows=8 width=16) (actual time=0.009..0.010 rows=8 loops=1)
                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                     Buffers: shared hit=1
-                    ->  Seq Scan on specialties s  (cost=0.00..1.08 rows=8 width=16) (actual time=0.019..0.022 rows=8 loops=1)
+                    ->  Seq Scan on specialties s  (cost=0.00..1.08 rows=8 width=16) (actual time=0.005..0.005 rows=8 loops=1)
                           Buffers: shared hit=1
 Planning:
-  Buffers: shared hit=354
-Planning Time: 2.070 ms
-Execution Time: 133.294 ms
+  Buffers: shared hit=355
+Planning Time: 0.531 ms
+Execution Time: 46.055 ms
 
 

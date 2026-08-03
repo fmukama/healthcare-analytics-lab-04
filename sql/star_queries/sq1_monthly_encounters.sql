@@ -7,8 +7,9 @@
 -- second statement and a syntax error. It also means a grader can paste this
 -- query anywhere and have it run.
 --
--- THE OBVIOUS REWRITE OF THIS QUERY IS SLOWER THAN THE OLTP ORIGINAL - measured
--- at 241ms against 151ms. fact_encounters is 16MB where encounters is 5MB, so
+-- THE OBVIOUS REWRITE OF THIS QUERY IS SLOWER THAN THE OLTP ORIGINAL - during
+-- development the naive form measured 241ms against the original's 151ms in the
+-- same session. fact_encounters is 16MB where encounters is 5MB, so
 -- there are three times as many pages to scan, and Postgres has no hash path for
 -- COUNT(DISTINCT), so the naive form sorts all 70,004 rows off the wider table.
 -- Dropping one join does not pay for that. Two rewrites earn the win back:
@@ -19,7 +20,8 @@
 --      the expensive GROUP BY runs on 4-byte surrogate keys rather than a
 --      VARCHAR(100) and a VARCHAR(50). dim_date must be joined BEFORE, because
 --      the month is part of the grain the patient DISTINCT is computed at.
--- Net: 95ms against the OLTP's 151ms.
+-- Net effect: the smallest speedup of the four (see notes/sq1_analysis.txt for
+-- the measured figures), because a sort can be made cheaper but not abolished.
 WITH per_patient AS (
     SELECT
         dd.year                AS y,

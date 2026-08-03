@@ -7,7 +7,8 @@
 -- THE HEADLINE. Q3's correlated EXISTS over 70,004 encounters is gone entirely:
 -- is_readmit_30d was computed once during the ETL, so this collapses to a GROUP
 -- BY over a boolean served by the partial index idx_fact_inpatient.
--- 10,376ms -> 6ms. The self-join was not optimised; it stopped existing.
+-- Three orders of magnitude, and 8,939,200 buffer reads collapse to ~2,000.
+-- The self-join was not optimised; it stopped existing.
 --
 -- Cohort translation, term for term:
 --     encounter_type = 'Inpatient'   ->  f.is_inpatient

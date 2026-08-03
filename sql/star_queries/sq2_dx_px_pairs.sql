@@ -14,7 +14,9 @@
 -- still a many-to-many join. It gets faster for three ordinary reasons - the
 -- bridges are narrow and indexed, the keys are 4-byte integers rather than
 -- varchars, and the hop through `encounters` disappears because both bridges
--- point straight at the fact. 1006ms -> 373ms, not the ~1700x that Q3 sees.
+-- point straight at the fact. A single-digit gain rather than the
+-- three orders of magnitude Q3 sees - because this work was made cheaper, not
+-- eliminated.
 --
 -- COUNT(DISTINCT) is replaced by COUNT(*) over a pre-deduplicated procedure set.
 -- That is exact rather than an approximation, and it is the BRIDGE DESIGN that
