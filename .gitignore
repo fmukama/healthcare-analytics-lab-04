@@ -10,10 +10,4 @@ Desktop.ini
 *.swp
 .vscode/
 .idea/
-
-# docs/ is deliberately NOT tracked. guide.md and understanding.md are local
-# working notes, not graded artefacts - the six deliverables live in
-# deliverables/ and stand on their own. Keeping docs/ out of the repository
-# keeps the submission to what is actually being marked. This subsumes the
-# docs/rendered/ rule that used to sit above.
 docs/
