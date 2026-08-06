@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# =============================================================================
+# *******************************************************
 # Turns out/timings.csv into the OLTP-vs-star comparison table.
 #
 # Contract with run_query.sh: one line per run, "phase,label,median_ms".
 # OLTP runs land as `oltp,q1,...`, star runs as `star,sq1,...`. Rename a label
 # in one place and you must rename it in the other.
-# =============================================================================
+# *******************************************************
 set -euo pipefail
 
 CSV=/work/out/timings.csv
@@ -27,9 +27,9 @@ fi
 dupes=$(awk -F, 'NF>=3 {seen[$1","$2]++} END {for (k in seen) if (seen[k]>1) printf "%s x%d\n", k, seen[k]}' "$CSV")
 
 {
-  echo "=============================================================="
+  echo "*******************************************************"
   echo " PERFORMANCE COMPARISON  (median of 3 warm runs, same instance)"
-  echo "=============================================================="
+  echo "*******************************************************"
 
   if [ -n "$dupes" ]; then
     echo ""

@@ -70,7 +70,7 @@ RUN  = $(COMPOSE) exec -T -e PGUSER=$(PGUSER) -e PGDATABASE=$(PGDATABASE) $(DB) 
 # these targets are actions, not files to check timestamps on.
 .PHONY: help up down nuke wait shell oltp volume q% queries \
         star etl sq% star-queries bench test docs deliverables \
-        all ci clean
+        verify-ddl all ci clean
 
 help:
 	@echo ""
@@ -97,6 +97,7 @@ help:
 	@echo "    make test          integrity + parity assertions (fails loudly)"
 	@echo "    make docs          render docs/*.puml to PNG + SVG"
 	@echo "    make deliverables  assemble the 6 graded files"
+	@echo "    make verify-ddl    assert the graded DDL is the DDL that runs"
 	@echo ""
 	@echo "    make all           everything, from zero  <-- the demo command"
 	@echo "    make ci            same, small dataset, for CI"
@@ -179,6 +180,36 @@ docs:                                  # renders docs/*.puml via the official pl
 deliverables:
 	$(RUN) /work/scripts/build_deliverables.sh all
 
+# deliverables/star_schema.sql is the ONE deliverable that is a copy rather than
+# a build: build_deliverables.sh `cp`s it from sql/star/01_star_schema.sql, so
+# the DDL that actually RAN is what gets graded. Both files are committed, and
+# nothing in tests/ compares them — so the failure mode is silent. Edit the
+# source, forget `make deliverables`, commit, and the graded DDL now describes a
+# schema this project no longer builds. Nobody notices until a marker reads it.
+#
+# This target makes that loud. Deliberately a plain file comparison: no database,
+# no container, no psql — so it runs on a bare clone, in a pre-commit hook, or in
+# CI. `all` runs it LAST, after `deliverables` has regenerated the copy, so a
+# green `make all` is also a proof that the two are in sync.
+#
+# Byte-identity is the right assertion precisely BECAUSE the copy is verbatim —
+# adding a "generated file, do not edit" header to the deliverable would be
+# friendlier to a human but would cost this one-line check. .gitattributes pins
+# both files to LF, so this never false-alarms on line endings.
+verify-ddl:
+	@diff -q sql/star/01_star_schema.sql deliverables/star_schema.sql >/dev/null 2>&1 \
+	  && echo ">> in sync: deliverables/star_schema.sql == sql/star/01_star_schema.sql" \
+	  || { echo ""; \
+	       echo "!! STALE DELIVERABLE"; \
+	       echo "!! deliverables/star_schema.sql is NOT the DDL that runs."; \
+	       echo "!! the graded file describes a schema this project no longer builds."; \
+	       echo "!!"; \
+	       echo "!!   fix:  make deliverables"; \
+	       echo ""; \
+	       diff sql/star/01_star_schema.sql deliverables/star_schema.sql | head -20; \
+	       echo ""; \
+	       exit 1; }
+
 # ---------- pipelines -----
 # `all` is the one-command demo: wipes the database, rebuilds everything from
 # zero, and ends with the 6 graded files in deliverables/. Reproducibility over
@@ -189,7 +220,7 @@ deliverables:
 # previous (possibly different-sized) database, and the speedup table would be
 # arithmetic on unrelated numbers. If `all` wipes the database for
 # reproducibility, it has to wipe the measurements taken against the old one too.
-all: clean nuke up oltp volume queries star etl test star-queries bench deliverables
+all: clean nuke up oltp volume queries star etl test star-queries bench deliverables verify-ddl
 	@echo ""
 	@echo "=========================================="
 	@echo " DONE. See deliverables/ and out/"

@@ -1,45 +1,35 @@
 Comparison:
-  - OLTP  : 121.887 ms   (sql/analysis/q1_monthly_encounters.sql)
-  - STAR  :  59.786 ms
-  - Improvement: 2.0x faster
-  - Parity: proven identical, both EXCEPT directions, 576 rows
-            (tests/10_parity_q1.sql)
+  - OLTP  : 101.355 ms   (sql/analysis/q1_monthly_encounters.sql)
+  - STAR  :  71.254 ms
+  - Improvement: 1.4x faster
+  - Parity: identical, both EXCEPT directions, 576 rows (tests/10_parity_q1.sql)
 
 Why it is faster:
-  1. One hop instead of a chain. specialty_key sits directly on the fact, so
-     encounters -> providers -> specialties collapses. dim_provider is never
-     touched. The three remaining joins are INDEPENDENT, so the planner hashes
-     three small dimensions and streams the fact past them once, rather than
-     feeding one join's output into the next.
-  2. The month is a stored column. GROUP BY reads dim_date.year/month instead of
-     calling date_trunc() 70,004 times, and make_date() runs once per output
-     group rather than once per row.
-  3. The sort almost disappears. The OLTP plan quicksorts all 70,004 rows in
-     6,875 kB; this plan sorts 576 rows in 64 kB.
+  1. One hop instead of a chain. specialty_key sits on the fact, so
+     encounters -> providers -> specialties collapses and dim_provider is never
+     touched. The remaining joins are INDEPENDENT: the planner hashes three small
+     dimensions and streams the fact past them once.
+  2. The month is a stored column - no date_trunc() per row.
+  3. The sort almost disappears: 70,004 rows in 6,875 kB becomes 576 rows in 64 kB.
 
 The honest part - the naive rewrite was SLOWER than the original:
-  The obvious translation of this query measured 241ms against the OLTP's 151ms
-  in the same session. Two reasons, and neither is obvious from the diagram:
-
+  The obvious translation measured 241ms against the OLTP's 151ms in the same
+  session. Two causes, neither visible in a schema diagram:
   - fact_encounters is 16 MB where encounters is 5 MB. The fact carries eleven
-    measures the source does not, so it is three times the pages to scan. The
-    star schema is not automatically smaller; here it is deliberately bigger.
+    measures the source does not, so it is 3x the pages to scan. A star schema is
+    not automatically smaller; here it is deliberately bigger.
   - Postgres has no hash path for COUNT(DISTINCT), so the one-level form still
-    sorted all 70,004 rows - now off a wider table. Removing a join did not pay
-    for the extra width.
+    sorted all 70,004 rows, now off a wider table.
 
-  The fix was two rewrites, both dimensional-modelling technique rather than
-  tuning tricks:
-  - COUNT(DISTINCT patient) became a TWO-LEVEL aggregation. Grouping to
-    (group x patient) first, then counting rows, lets the planner HashAggregate
-    twice instead of sorting once.
-  - dim_specialty and dim_encounter_type are joined AFTER the aggregate, so the
-    expensive GROUP BY runs on 4-byte surrogate keys instead of a VARCHAR(100)
-    and a VARCHAR(50). This is the concrete reason surrogate keys are narrow
-    integers, and it is worth more than the removed join.
+  Two fixes, both dimensional-modelling technique rather than tuning:
+  - COUNT(DISTINCT patient) became a TWO-LEVEL aggregation, so the planner
+    HashAggregates twice instead of sorting once.
+  - The text-carrying dimensions are joined AFTER the aggregate, so GROUP BY runs
+    on 4-byte keys instead of VARCHAR(100). This is the concrete reason surrogate
+    keys are narrow integers, and here it is worth more than the removed join.
 
-  Note the buffer count went UP, 653 to 2,023, and the query still got 2.0x
-  faster. Fewer pages read is not what made the difference; not sorting 70,004
-  rows is. This is also the smallest speedup of the four, which is worth being
-  plain about: Q1's bottleneck was a sort, and a sort can only be made cheaper,
-  not abolished.
+  Buffers went UP, 653 to 2,023, and the query still got faster. Fewer pages read
+  is not what did it; not sorting 70,004 rows is.
+
+  Smallest speedup of the four, and worth stating plainly: Q1's bottleneck was a
+  sort, and a sort can only be made cheaper, never abolished.

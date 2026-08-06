@@ -1,6 +1,6 @@
-==============================================================================
+*******************************************************
  PART 3.3 - STAR SCHEMA QUERIES + PERFORMANCE COMPARISON
-==============================================================================
+*******************************************************
 
 Each query below answers the same business question as its OLTP
 counterpart in query_analysis.txt, and is proven to return identical
@@ -76,99 +76,89 @@ ORDER BY 1, 2, 3
 
 
 Comparison:
-  - OLTP  : 121.887 ms   (sql/analysis/q1_monthly_encounters.sql)
-  - STAR  :  59.786 ms
-  - Improvement: 2.0x faster
-  - Parity: proven identical, both EXCEPT directions, 576 rows
-            (tests/10_parity_q1.sql)
+  - OLTP  : 101.355 ms   (sql/analysis/q1_monthly_encounters.sql)
+  - STAR  :  71.254 ms
+  - Improvement: 1.4x faster
+  - Parity: identical, both EXCEPT directions, 576 rows (tests/10_parity_q1.sql)
 
 Why it is faster:
-  1. One hop instead of a chain. specialty_key sits directly on the fact, so
-     encounters -> providers -> specialties collapses. dim_provider is never
-     touched. The three remaining joins are INDEPENDENT, so the planner hashes
-     three small dimensions and streams the fact past them once, rather than
-     feeding one join's output into the next.
-  2. The month is a stored column. GROUP BY reads dim_date.year/month instead of
-     calling date_trunc() 70,004 times, and make_date() runs once per output
-     group rather than once per row.
-  3. The sort almost disappears. The OLTP plan quicksorts all 70,004 rows in
-     6,875 kB; this plan sorts 576 rows in 64 kB.
+  1. One hop instead of a chain. specialty_key sits on the fact, so
+     encounters -> providers -> specialties collapses and dim_provider is never
+     touched. The remaining joins are INDEPENDENT: the planner hashes three small
+     dimensions and streams the fact past them once.
+  2. The month is a stored column - no date_trunc() per row.
+  3. The sort almost disappears: 70,004 rows in 6,875 kB becomes 576 rows in 64 kB.
 
 The honest part - the naive rewrite was SLOWER than the original:
-  The obvious translation of this query measured 241ms against the OLTP's 151ms
-  in the same session. Two reasons, and neither is obvious from the diagram:
-
+  The obvious translation measured 241ms against the OLTP's 151ms in the same
+  session. Two causes, neither visible in a schema diagram:
   - fact_encounters is 16 MB where encounters is 5 MB. The fact carries eleven
-    measures the source does not, so it is three times the pages to scan. The
-    star schema is not automatically smaller; here it is deliberately bigger.
+    measures the source does not, so it is 3x the pages to scan. A star schema is
+    not automatically smaller; here it is deliberately bigger.
   - Postgres has no hash path for COUNT(DISTINCT), so the one-level form still
-    sorted all 70,004 rows - now off a wider table. Removing a join did not pay
-    for the extra width.
+    sorted all 70,004 rows, now off a wider table.
 
-  The fix was two rewrites, both dimensional-modelling technique rather than
-  tuning tricks:
-  - COUNT(DISTINCT patient) became a TWO-LEVEL aggregation. Grouping to
-    (group x patient) first, then counting rows, lets the planner HashAggregate
-    twice instead of sorting once.
-  - dim_specialty and dim_encounter_type are joined AFTER the aggregate, so the
-    expensive GROUP BY runs on 4-byte surrogate keys instead of a VARCHAR(100)
-    and a VARCHAR(50). This is the concrete reason surrogate keys are narrow
-    integers, and it is worth more than the removed join.
+  Two fixes, both dimensional-modelling technique rather than tuning:
+  - COUNT(DISTINCT patient) became a TWO-LEVEL aggregation, so the planner
+    HashAggregates twice instead of sorting once.
+  - The text-carrying dimensions are joined AFTER the aggregate, so GROUP BY runs
+    on 4-byte keys instead of VARCHAR(100). This is the concrete reason surrogate
+    keys are narrow integers, and here it is worth more than the removed join.
 
-  Note the buffer count went UP, 653 to 2,023, and the query still got 2.0x
-  faster. Fewer pages read is not what made the difference; not sorting 70,004
-  rows is. This is also the smallest speedup of the four, which is worth being
-  plain about: Q1's bottleneck was a sort, and a sort can only be made cheaper,
-  not abolished.
+  Buffers went UP, 653 to 2,023, and the query still got faster. Fewer pages read
+  is not what did it; not sorting 70,004 rows is.
+
+  Smallest speedup of the four, and worth stating plainly: Q1's bottleneck was a
+  sort, and a sort can only be made cheaper, never abolished.
 
 Performance (measured):
-  - Median execution time : 59.786 ms   (1 discarded warm-up, median of 3)
-  - Final run reported    : 58.210 ms
+  - Median execution time : 71.254 ms   (1 discarded warm-up, median of 3)
+  - Final run reported    : 58.952 ms
   - Buffers: shared hit=2023
 
 Query plan (EXPLAIN ANALYZE, BUFFERS):
-Sort  (cost=11211.32..11211.35 rows=13 width=39) (actual time=53.724..53.746 rows=576 loops=1)
+Sort  (cost=11211.32..11211.35 rows=13 width=39) (actual time=55.866..55.890 rows=576 loops=1)
   Sort Key: (make_date((dd.year)::integer, (dd.month)::integer, 1)), ds.specialty_name, det.type_name
   Sort Method: quicksort  Memory: 64kB
   Buffers: shared hit=2023
-  ->  Hash Join  (cost=10822.87..11211.08 rows=13 width=39) (actual time=53.132..53.366 rows=576 loops=1)
+  ->  Hash Join  (cost=10822.87..11211.08 rows=13 width=39) (actual time=55.199..55.449 rows=576 loops=1)
         Hash Cond: (f.specialty_key = ds.specialty_key)
         Buffers: shared hit=2017
-        ->  Hash Join  (cost=10821.67..11209.03 rows=280 width=32) (actual time=53.103..53.270 rows=576 loops=1)
+        ->  Hash Join  (cost=10821.67..11209.03 rows=280 width=32) (actual time=55.159..55.339 rows=576 loops=1)
               Hash Cond: (f.encounter_type_key = det.encounter_type_key)
               Buffers: shared hit=2016
-              ->  HashAggregate  (cost=10820.58..11030.49 rows=13994 width=28) (actual time=53.087..53.199 rows=576 loops=1)
+              ->  HashAggregate  (cost=10820.58..11030.49 rows=13994 width=28) (actual time=55.143..55.266 rows=576 loops=1)
                     Group Key: dd.year, dd.month, f.specialty_key, f.encounter_type_key
                     Batches: 1  Memory Usage: 529kB
                     Buffers: shared hit=2015
-                    ->  HashAggregate  (cost=5922.75..7322.13 rows=139938 width=24) (actual time=34.643..45.312 rows=69026 loops=1)
+                    ->  HashAggregate  (cost=5922.75..7322.13 rows=139938 width=24) (actual time=34.590..46.116 rows=69026 loops=1)
                           Group Key: dd.year, dd.month, f.specialty_key, f.encounter_type_key, f.patient_key
                           Batches: 1  Memory Usage: 14353kB
                           Buffers: shared hit=2015
-                          ->  Hash Join  (cost=59.11..3823.68 rows=139938 width=18) (actual time=0.292..15.538 rows=70004 loops=1)
+                          ->  Hash Join  (cost=59.11..3823.68 rows=139938 width=18) (actual time=0.292..15.914 rows=70004 loops=1)
                                 Hash Cond: (f.admit_date_key = dd.date_key)
                                 Buffers: shared hit=2015
-                                ->  Seq Scan on fact_encounters f  (cost=0.00..3396.38 rows=139938 width=18) (actual time=0.003..5.926 rows=70004 loops=1)
+                                ->  Seq Scan on fact_encounters f  (cost=0.00..3396.38 rows=139938 width=18) (actual time=0.004..6.081 rows=70004 loops=1)
                                       Buffers: shared hit=1997
-                                ->  Hash  (cost=36.27..36.27 rows=1827 width=8) (actual time=0.277..0.278 rows=1827 loops=1)
+                                ->  Hash  (cost=36.27..36.27 rows=1827 width=8) (actual time=0.276..0.277 rows=1827 loops=1)
                                       Buckets: 2048  Batches: 1  Memory Usage: 88kB
                                       Buffers: shared hit=18
-                                      ->  Seq Scan on dim_date dd  (cost=0.00..36.27 rows=1827 width=8) (actual time=0.003..0.128 rows=1827 loops=1)
+                                      ->  Seq Scan on dim_date dd  (cost=0.00..36.27 rows=1827 width=8) (actual time=0.004..0.124 rows=1827 loops=1)
                                             Buffers: shared hit=18
-              ->  Hash  (cost=1.04..1.04 rows=4 width=12) (actual time=0.004..0.006 rows=4 loops=1)
+              ->  Hash  (cost=1.04..1.04 rows=4 width=12) (actual time=0.004..0.007 rows=4 loops=1)
                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
                     Buffers: shared hit=1
                     ->  Seq Scan on dim_encounter_type det  (cost=0.00..1.04 rows=4 width=12) (actual time=0.002..0.003 rows=4 loops=1)
                           Buffers: shared hit=1
-        ->  Hash  (cost=1.09..1.09 rows=9 width=15) (actual time=0.018..0.019 rows=9 loops=1)
+        ->  Hash  (cost=1.09..1.09 rows=9 width=15) (actual time=0.018..0.018 rows=9 loops=1)
               Buckets: 1024  Batches: 1  Memory Usage: 9kB
               Buffers: shared hit=1
-              ->  Seq Scan on dim_specialty ds  (cost=0.00..1.09 rows=9 width=15) (actual time=0.012..0.013 rows=9 loops=1)
+              ->  Seq Scan on dim_specialty ds  (cost=0.00..1.09 rows=9 width=15) (actual time=0.010..0.011 rows=9 loops=1)
                     Buffers: shared hit=1
 Planning:
   Buffers: shared hit=481
-Planning Time: 1.222 ms
-Execution Time: 58.210 ms
+Planning Time: 0.880 ms
+Execution Time: 58.952 ms
 
 
 ------------------------------------------------------------------------------
@@ -227,114 +217,99 @@ LIMIT 20
 
 
 Comparison:
-  - OLTP  : 784.986 ms   (sql/analysis/q2_dx_px_pairs.sql)
-  - STAR  :  231.715 ms
-  - Improvement: 3.4x faster
-  - Parity: proven identical over the FULL 2,400-pair result, both EXCEPT
-            directions (tests/11_parity_q2.sql)
+  - OLTP  : 643.808 ms   (sql/analysis/q2_dx_px_pairs.sql)
+  - STAR  : 206.387 ms
+  - Improvement: 3.1x faster
+  - Parity: identical over the FULL 2,400-pair result, both EXCEPT directions
+            (tests/11_parity_q2.sql)
 
 Why it is faster:
-  This is the one query that does NOT become trivial, and saying so plainly is
-  more useful than pretending otherwise. It is still a many-to-many join. It gets
-  faster for three ordinary reasons rather than one structural one:
+  This is the one query that does NOT become trivial - it is still a many-to-many
+  join. Three ordinary gains rather than one structural one:
 
-  1. The hop through `encounters` disappears - both bridges point straight at the
-     fact via encounter_sk, so the junction tables no longer have to be joined
-     back through their parent.
-  2. Narrow integer surrogate keys instead of varchar joins, on tables that carry
-     nothing but keys.
-  3. COUNT(DISTINCT) becomes COUNT(*) over a pre-deduplicated set, which lets the
-     plan use a HashAggregate where the OLTP version needs a GroupAggregate fed
-     by a 30 MB sort of 262,323 rows.
+  1. The hop through encounters disappears - both bridges point straight at the
+     fact via encounter_sk.
+  2. Narrow integer surrogate keys, on tables carrying nothing but keys.
+  3. COUNT(DISTINCT) becomes COUNT(*) over a pre-deduplicated set, so the plan uses
+     a HashAggregate where OLTP needs a GroupAggregate fed by a 30 MB sort of
+     262,323 rows.
 
-  Point 3 is exact, not an approximation, and it is the BRIDGE DESIGN that makes
-  it safe. bridge_encounter_diagnoses is keyed (encounter_sk, diagnosis_key), so
-  it already holds at most one row per encounter+diagnosis. The procedures bridge
-  deliberately is not - it preserves repeat CPT codes, because two chest X-rays
-  are two real billable events - so it is deduplicated inside the query instead.
-  With both sides unique per encounter, the join emits exactly one row per
-  (encounter, diagnosis, procedure) triple, so COUNT(*) IS the distinct-encounter
-  count.
-
-  The SELECT DISTINCT is a no-op on this dataset (no encounter repeats a CPT) but
-  it is load bearing: without it, one repeat would inflate the count above the
-  true number of encounters.
+  Point 3 is exact, and the BRIDGE DESIGN is what makes it safe.
+  bridge_encounter_diagnoses is keyed (encounter_sk, diagnosis_key), so it holds at
+  most one row per encounter+diagnosis. The procedures bridge deliberately is not -
+  it preserves repeat CPT codes, because two chest X-rays are two real billable
+  events - so it is deduplicated inside the query. With both sides unique per
+  encounter, the join emits one row per (encounter, diagnosis, procedure) triple,
+  so COUNT(*) IS the distinct-encounter count. The SELECT DISTINCT is a no-op on
+  this dataset but load-bearing: one repeat CPT would inflate the count.
 
 What this query does NOT get:
-  3.4x, against Q3's 1307x. The difference is instructive. Q3 had its work
-  ELIMINATED at load time; Q2 only had its work made cheaper. Any question that
-  genuinely needs code-level detail has to touch the many-to-many, and no
-  dimensional model removes that - it only confines it. Q1, Q3 and Q4 never touch
-  these bridges at all, which is the actual win.
+  3.1x, against Q3's 1,477x. Q3 had its work ELIMINATED at load time; Q2 only had
+  its work made cheaper. Any question needing code-level detail must touch the
+  many-to-many; a dimensional model only confines it. Q1, Q3 and Q4 never touch
+  these bridges - that is the actual win.
 
-  The production fix would be a pre-built agg_diagnosis_procedure_pairs summary
-  table. It would be far faster and it would answer exactly one question; the
-  bridge answers any question about diagnoses or procedures. That is the trade.
+  The production fix is a pre-built agg_diagnosis_procedure_pairs table: far
+  faster, and it answers one question where the bridge answers any.
 
 On the top-20 not being unique:
-  Q2's ORDER BY has no tiebreaker and there is a tie AT the cut. Measured: the
-  cut value is 140, 13 pairs sit strictly above it, and 8 are tied for the 7
-  remaining slots - so 8 different top-20s are all equally correct. Both engines
-  happen to return the same 20 today, but that is an accident of both plans using
-  a top-N heapsort fed in the same order.
-
-  Rather than assert something that is not actually true, the test proves the
-  FULL 2,400-pair population is identical (strictly stronger than checking 20
-  rows), plus the cut value, the vector of 20 counts, and the 13 rows above the
-  cut. In production I would add `, icd10_code, cpt_code` to the ORDER BY - a
-  report whose rows reshuffle between runs is broken as a report, independent of
-  which schema serves it. I left the brief's query as written.
+  ORDER BY has no tiebreaker and there is a tie AT the cut - 13 pairs sit above the
+  cut value of 140 and 8 are tied for the 7 remaining slots, so 8 different top-20s
+  are equally correct. The test therefore proves the FULL 2,400-pair population is
+  identical, which is strictly stronger than checking 20 rows. In production I
+  would add icd10_code, cpt_code to the ORDER BY; I left the brief's query as
+  written.
 
 Performance (measured):
-  - Median execution time : 231.715 ms   (1 discarded warm-up, median of 3)
-  - Final run reported    : 207.904 ms
+  - Median execution time : 206.387 ms   (1 discarded warm-up, median of 3)
+  - Final run reported    : 186.798 ms
   - Buffers: shared hit=1725
 
 Query plan (EXPLAIN ANALYZE, BUFFERS):
-Limit  (cost=8884.89..8884.94 rows=20 width=44) (actual time=206.813..206.819 rows=20 loops=1)
+Limit  (cost=8878.15..8878.20 rows=20 width=44) (actual time=185.581..185.586 rows=20 loops=1)
   Buffers: shared hit=1725
-  ->  Sort  (cost=8884.89..8897.40 rows=5002 width=44) (actual time=206.812..206.817 rows=20 loops=1)
+  ->  Sort  (cost=8878.15..8890.65 rows=5002 width=44) (actual time=185.579..185.584 rows=20 loops=1)
         Sort Key: (count(*)) DESC
         Sort Method: top-N heapsort  Memory: 27kB
         Buffers: shared hit=1725
-        ->  HashAggregate  (cost=8701.77..8751.79 rows=5002 width=44) (actual time=206.310..206.519 rows=2400 loops=1)
+        ->  HashAggregate  (cost=8695.03..8745.05 rows=5002 width=44) (actual time=185.089..185.289 rows=2400 loops=1)
               Group Key: dd.icd10_code, dd.icd10_description, dp.cpt_code, dp.cpt_description
               Batches: 1  Memory Usage: 465kB
               Buffers: shared hit=1722
-              ->  Hash Join  (cost=7238.03..8333.85 rows=29434 width=36) (actual time=53.283..149.979 rows=262323 loops=1)
+              ->  Hash Join  (cost=7238.03..8328.75 rows=29302 width=36) (actual time=48.362..133.910 rows=262323 loops=1)
                     Hash Cond: (bed.diagnosis_key = dd.diagnosis_key)
                     Buffers: shared hit=1722
-                    ->  Hash Join  (cost=7233.29..8249.16 rows=29434 width=21) (actual time=53.242..126.332 rows=262323 loops=1)
+                    ->  Hash Join  (cost=7233.29..8244.42 rows=29302 width=21) (actual time=48.324..110.801 rows=262323 loops=1)
                           Hash Cond: (bridge_encounter_procedures.encounter_sk = bed.encounter_sk)
                           Buffers: shared hit=1720
-                          ->  Hash Join  (cost=2348.25..3003.57 rows=10594 width=25) (actual time=22.312..50.218 rows=104955 loops=1)
+                          ->  Hash Join  (cost=2348.25..3000.45 rows=10544 width=25) (actual time=21.185..45.505 rows=104955 loops=1)
                                 Hash Cond: (bridge_encounter_procedures.procedure_key = dp.procedure_key)
                                 Buffers: shared hit=773
-                                ->  HashAggregate  (cost=2346.32..2863.11 rows=51679 width=12) (actual time=22.288..40.062 rows=104955 loops=1)
+                                ->  HashAggregate  (cost=2346.32..2860.65 rows=51433 width=12) (actual time=21.161..35.663 rows=104955 loops=1)
                                       Group Key: bridge_encounter_procedures.encounter_sk, bridge_encounter_procedures.procedure_key
                                       Batches: 1  Memory Usage: 11281kB
                                       Buffers: shared hit=772
-                                      ->  Seq Scan on bridge_encounter_procedures  (cost=0.00..1821.55 rows=104955 width=12) (actual time=0.002..4.573 rows=104955 loops=1)
+                                      ->  Seq Scan on bridge_encounter_procedures  (cost=0.00..1821.55 rows=104955 width=12) (actual time=0.002..4.586 rows=104955 loops=1)
                                             Buffers: shared hit=772
-                                ->  Hash  (cost=1.41..1.41 rows=41 width=21) (actual time=0.012..0.012 rows=41 loops=1)
+                                ->  Hash  (cost=1.41..1.41 rows=41 width=21) (actual time=0.012..0.013 rows=41 loops=1)
                                       Buckets: 1024  Batches: 1  Memory Usage: 11kB
                                       Buffers: shared hit=1
-                                      ->  Seq Scan on dim_procedure dp  (cost=0.00..1.41 rows=41 width=21) (actual time=0.003..0.006 rows=41 loops=1)
+                                      ->  Seq Scan on dim_procedure dp  (cost=0.00..1.41 rows=41 width=21) (actual time=0.004..0.006 rows=41 loops=1)
                                             Buffers: shared hit=1
-                          ->  Hash  (cost=2697.24..2697.24 rows=175024 width=12) (actual time=30.303..30.303 rows=175024 loops=1)
+                          ->  Hash  (cost=2697.24..2697.24 rows=175024 width=12) (actual time=26.511..26.511 rows=175024 loops=1)
                                 Buckets: 262144  Batches: 1  Memory Usage: 10253kB
                                 Buffers: shared hit=947
-                                ->  Seq Scan on bridge_encounter_diagnoses bed  (cost=0.00..2697.24 rows=175024 width=12) (actual time=0.017..9.960 rows=175024 loops=1)
+                                ->  Seq Scan on bridge_encounter_diagnoses bed  (cost=0.00..2697.24 rows=175024 width=12) (actual time=0.015..9.545 rows=175024 loops=1)
                                       Buffers: shared hit=947
-                    ->  Hash  (cost=3.22..3.22 rows=122 width=23) (actual time=0.030..0.031 rows=61 loops=1)
+                    ->  Hash  (cost=3.22..3.22 rows=122 width=23) (actual time=0.028..0.028 rows=61 loops=1)
                           Buckets: 1024  Batches: 1  Memory Usage: 12kB
                           Buffers: shared hit=2
                           ->  Seq Scan on dim_diagnosis dd  (cost=0.00..3.22 rows=122 width=23) (actual time=0.005..0.018 rows=61 loops=1)
                                 Buffers: shared hit=2
 Planning:
   Buffers: shared hit=339
-Planning Time: 0.736 ms
-Execution Time: 207.904 ms
+Planning Time: 0.711 ms
+Execution Time: 186.798 ms
 
 
 ------------------------------------------------------------------------------
@@ -381,85 +356,72 @@ ORDER BY readmission_rate_pct DESC
 
 
 Comparison:
-  - OLTP  : 8781.832 ms   (sql/analysis/q3_readmission.sql)
-  - STAR  :       6.718 ms
-  - Improvement: 1307x faster
-  - Parity: proven identical (8 rows, both EXCEPT directions,
-            tests/12_parity_q3.sql), and the underlying flag proven row-by-row
-            against the OLTP self-join across all 70,004 encounters
-            (tests/14_readmission_flag.sql)
+  - OLTP  : 8,701.076 ms   (sql/analysis/q3_readmission.sql)
+  - STAR  :     5.889 ms
+  - Improvement: 1,477x faster
+  - Parity: identical (8 rows, both EXCEPT directions, tests/12_parity_q3.sql), and
+            the flag itself proven row-by-row against the OLTP self-join across all
+            70,004 encounters (tests/14_readmission_flag.sql)
 
 Why it is faster:
   The self-join was not optimised. It stopped existing.
 
-  is_readmit_30d is a boolean column computed once during the ETL. The question
-  "which specialty has the highest 30-day readmission rate" therefore becomes a
-  GROUP BY over a boolean, served by the partial index idx_fact_inpatient, which
+  is_readmit_30d is a boolean computed once during the ETL, so the question becomes
+  a GROUP BY over a boolean, served by the partial index idx_fact_inpatient, which
   covers only the ~12% of rows that are inpatient stays.
 
-  The buffer numbers make the point better than the milliseconds:
+  The buffers make the point better than the milliseconds:
 
       OLTP : 8,939,200 buffer hits   (~71 GB of logical reads, for 8 rows)
       STAR :     2,018 buffer hits
       ratio: 4,430x fewer pages touched
 
-  The OLTP query re-scanned encounters once per index stay because there is no
-  index on patient_id and the match is a date RANGE, which cannot be hashed. The
-  star query reads a narrow slice of one table.
+  Q1, Q2 and Q4 got 1.4-3.1x because their work was made cheaper. Q3 got 1,477x
+  because its work moved to load time and is not done at query time at all. Those
+  are different kinds of win; averaging them would misrepresent both.
 
-  This is the clearest example in the lab of what pre-aggregation actually buys.
-  Q1, Q2 and Q4 got faster by 2-3x because their work was made cheaper. Q3 got
-  1307x faster because its work was moved to load time and is not done at query
-  time at all. Those are different kinds of win, and blurring them into an
-  "average speedup" would misrepresent both.
-
-The cost, stated honestly:
-  is_readmit_30d is DERIVED data. Three consequences:
-
-  1. If the clinical definition changes from 30 days to 45, this column must be
-     RELOADED. No query edit can fix it. days_to_next_encounter is stored beside
-     it precisely so the threshold stays auditable and re-derivable without
-     returning to the source.
-  2. It depends on the FUTURE. An inpatient stay discharged on Monday only
-     becomes a readmission when the return visit arrives, so an incremental load
-     must recompute already-loaded rows at least 30 days back, not just insert
-     new ones.
-  3. It can silently drift from the source definition. That is exactly why
-     tests/14 compares the flag row-by-row rather than trusting the 8 aggregated
-     rows in tests/12, where two opposite errors could cancel out. A fast,
-     confident, wrong answer is the failure mode this whole design invites.
+The cost, stated honestly - is_readmit_30d is DERIVED data:
+  1. If the definition changes from 30 to 45 days, the column must be RELOADED. No
+     query edit fixes it. days_to_next_encounter sits beside it so the threshold
+     stays auditable without returning to the source.
+  2. It depends on the FUTURE. A stay discharged Monday only becomes a readmission
+     when the return arrives, so incremental loads must recompute already-loaded
+     rows at least 30 days back.
+  3. It can silently drift from the source definition. That is why tests/14
+     compares the flag row-by-row rather than trusting the 8 aggregated rows in
+     tests/12, where two opposite errors could cancel out. A fast, confident, wrong
+     answer is the failure mode this design invites.
 
 On the cohort translation:
-  Q3's index stays are `encounter_type = 'Inpatient' AND discharge_date IS NOT
-  NULL`. The star equivalent is `f.is_inpatient AND f.discharge_date_key <> -1`,
-  because the ETL maps a NULL discharge to the dim_date Unknown member. That
-  second predicate matches 0 rows today - every generated encounter has a
-  discharge date - but without it this stops being a translation of Q3 the moment
-  one open stay exists, and it would fail silently rather than loudly.
+  Q3's index stays are encounter_type = 'Inpatient' AND discharge_date IS NOT NULL.
+  The star equivalent is f.is_inpatient AND f.discharge_date_key <> -1, because the
+  ETL maps a NULL discharge to the Unknown date member. That second predicate
+  matches 0 rows today, but without it this stops being a translation of Q3 the
+  moment one open stay exists - and it would fail silently.
 
 Performance (measured):
-  - Median execution time : 6.718 ms   (1 discarded warm-up, median of 3)
-  - Final run reported    : 6.105 ms
+  - Median execution time : 5.889 ms   (1 discarded warm-up, median of 3)
+  - Final run reported    : 5.932 ms
   - Buffers: shared hit=2018
 
 Query plan (EXPLAIN ANALYZE, BUFFERS):
-Sort  (cost=2561.55..2561.57 rows=9 width=59) (actual time=6.007..6.010 rows=8 loops=1)
+Sort  (cost=2559.94..2559.96 rows=9 width=59) (actual time=5.837..5.840 rows=8 loops=1)
   Sort Key: (round(((100.0 * (sum(CASE WHEN f.is_readmit_30d THEN 1 ELSE 0 END))::numeric) / (NULLIF(count(*), 0))::numeric), 2)) DESC
   Sort Method: quicksort  Memory: 25kB
   Buffers: shared hit=2018
-  ->  HashAggregate  (cost=2561.18..2561.41 rows=9 width=59) (actual time=5.983..5.988 rows=8 loops=1)
+  ->  HashAggregate  (cost=2559.57..2559.80 rows=9 width=59) (actual time=5.813..5.818 rows=8 loops=1)
         Group Key: ds.specialty_name
         Batches: 1  Memory Usage: 24kB
         Buffers: shared hit=2015
-        ->  Hash Join  (cost=158.19..2433.66 rows=17003 width=12) (actual time=0.748..5.088 rows=8493 loops=1)
+        ->  Hash Join  (cost=157.91..2432.47 rows=16947 width=12) (actual time=0.737..4.920 rows=8493 loops=1)
               Hash Cond: (f.specialty_key = ds.specialty_key)
               Buffers: shared hit=2015
-              ->  Bitmap Heap Scan on fact_encounters f  (cost=156.99..2366.81 rows=17003 width=5) (actual time=0.733..4.002 rows=8493 loops=1)
+              ->  Bitmap Heap Scan on fact_encounters f  (cost=156.71..2365.83 rows=16947 width=5) (actual time=0.720..3.807 rows=8493 loops=1)
                     Recheck Cond: is_inpatient
                     Filter: (discharge_date_key <> '-1'::integer)
                     Heap Blocks: exact=1997
                     Buffers: shared hit=2014
-                    ->  Bitmap Index Scan on idx_fact_inpatient  (cost=0.00..152.73 rows=17026 width=0) (actual time=0.561..0.562 rows=16978 loops=1)
+                    ->  Bitmap Index Scan on idx_fact_inpatient  (cost=0.00..152.47 rows=16970 width=0) (actual time=0.551..0.552 rows=16978 loops=1)
                           Buffers: shared hit=17
               ->  Hash  (cost=1.09..1.09 rows=9 width=15) (actual time=0.007..0.008 rows=9 loops=1)
                     Buckets: 1024  Batches: 1  Memory Usage: 9kB
@@ -468,8 +430,8 @@ Sort  (cost=2561.55..2561.57 rows=9 width=59) (actual time=6.007..6.010 rows=8 l
                           Buffers: shared hit=1
 Planning:
   Buffers: shared hit=396
-Planning Time: 0.574 ms
-Execution Time: 6.105 ms
+Planning Time: 0.606 ms
+Execution Time: 5.932 ms
 
 
 ------------------------------------------------------------------------------
@@ -529,117 +491,112 @@ ORDER BY a.total_allowed DESC
 
 
 Comparison:
-  - OLTP  : 49.077 ms   (sql/analysis/q4_revenue.sql)
-  - STAR  :  18.646 ms
-  - Improvement: 2.6x faster
-  - Parity: proven identical, both EXCEPT directions, 192 rows
-            (tests/13_parity_q4.sql)
+  - OLTP  : 55.097 ms   (sql/analysis/q4_revenue.sql)
+  - STAR  : 18.687 ms
+  - Improvement: 2.9x faster
+  - Parity: identical, both EXCEPT directions, 192 rows (tests/13_parity_q4.sql)
 
 Why it is faster:
-  `billing` does not appear in this query at all. total_allowed_amount and
-  claim_count are already columns on the fact, so an entire table - and the
-  longest join chain in the lab - drops out. Four tables become fact plus two
-  dimensions, and the Denied-claim filter was applied once at load time rather
-  than on 61,598 rows per run.
+  billing does not appear in this query at all. total_allowed_amount and
+  claim_count are already columns on the fact, so an entire table - and the longest
+  join chain in the lab - drops out. Four tables become fact plus two dimensions,
+  and the Denied-claim filter was applied once at load time instead of on 61,598
+  rows per run.
 
-  dim_specialty is joined after the aggregate, so the GROUP BY runs on a 4-byte
-  surrogate key instead of a VARCHAR(100), and the month comes from a stored
-  column rather than a per-row date_trunc().
+  dim_specialty is joined after the aggregate, so GROUP BY runs on a 4-byte key
+  instead of a VARCHAR(100), and the month is a stored column.
 
-  2.6x, which is better than Q1's 2.0x even though Q1 sheds an expensive sort and
-  this query has none to shed. Q4 gains more because it had more to lose
-  structurally: an entire table plus the longest join chain in the lab. Its
-  aggregation was already a HashAggregate even in 3NF, since SUM and COUNT run
-  with a running accumulator and need no ordering - so nothing was being wasted
-  there to begin with. The whole cost was the chain, and the chain is exactly
-  what the star schema removes.
+  2.9x, better than Q1's 1.4x even though Q1 sheds an expensive sort and this query
+  has none to shed. Q4 gains more because it had more to lose structurally: a whole
+  table plus the longest chain. Its aggregation was already a HashAggregate in 3NF,
+  so nothing was wasted there. The cost was the chain, and the chain is what the
+  star removes.
 
 Two things that make this an exact translation rather than a near-enough one:
 
-  1. claim_count. Q4's COUNT(*) counts BILLING ROWS, not encounters. The fact is
-     at encounter grain, so the equivalent is SUM(f.claim_count) - never
-     COUNT(*) over fact rows, which would count encounters and be wrong by the
-     number of multi-claim encounters. SUM(smallint) returns bigint, matching
-     COUNT(*), so the parity EXCEPT needs no cast.
+  1. claim_count. Q4's COUNT(*) counts BILLING ROWS, not encounters. The fact is at
+     encounter grain, so the equivalent is SUM(f.claim_count) - never COUNT(*) over
+     fact rows, which would count encounters and be wrong by the number of
+     multi-claim encounters. SUM(smallint) returns bigint, matching COUNT(*), so
+     the parity EXCEPT needs no cast.
 
-  2. WHERE f.claim_count > 0. Q4 is anchored FROM billing, so a (month,
-     specialty) combination with no payable claim produces NO ROW. The fact holds
-     a row for every encounter, billed or not, so without this predicate the star
-     emits that group with total_allowed = 0. The SUMS are identical either way -
-     unbilled rows carry 0, the additive identity - so what this predicate
-     controls is group EXISTENCE and nothing else. That is exactly why it is easy
-     to omit and quietly return 193 rows instead of 192, with every total
-     correct. tests/13 asserts the filtered group count equals the OLTP row count
-     so this cannot regress unnoticed.
+  2. WHERE f.claim_count > 0. Q4 is anchored FROM billing, so a (month, specialty)
+     with no payable claim produces NO ROW. The fact holds a row for every
+     encounter, so without this predicate the star emits that group with
+     total_allowed = 0. The SUMS are identical either way - unbilled rows carry 0,
+     the additive identity - so this predicate controls group EXISTENCE and nothing
+     else. That is why it is easy to omit and quietly return 193 rows instead of
+     192, with every total correct. tests/13 asserts the filtered group count
+     equals the OLTP row count so it cannot regress unnoticed.
 
   The Denied filter lives in the ETL's billing CTE and in Q4's WHERE clause, and
-  the two must match. If they ever diverge the parity test fails - and the ETL is
-  what is wrong, not the test. tests/07 carries a negative control proving the
-  filter is genuinely applied rather than accidentally a no-op on both sides.
+  they must match. If they diverge the parity test fails - and the ETL is what is
+  wrong, not the test. tests/07 carries a negative control proving the filter is
+  genuinely applied rather than accidentally a no-op on both sides.
 
 Performance (measured):
-  - Median execution time : 18.646 ms   (1 discarded warm-up, median of 3)
-  - Final run reported    : 17.545 ms
+  - Median execution time : 18.687 ms   (1 discarded warm-up, median of 3)
+  - Final run reported    : 16.472 ms
   - Buffers: shared hit=2054
 
 Query plan (EXPLAIN ANALYZE, BUFFERS):
-Sort  (cost=5214.85..5214.92 rows=26 width=55) (actual time=15.869..17.412 rows=192 loops=1)
+Sort  (cost=5217.17..5217.23 rows=26 width=55) (actual time=14.962..16.319 rows=192 loops=1)
   Sort Key: (sum(f.total_allowed_amount)) DESC
   Sort Method: quicksort  Memory: 36kB
   Buffers: shared hit=2054
-  ->  Hash Join  (cost=5124.66..5214.24 rows=26 width=55) (actual time=15.629..17.347 rows=192 loops=1)
+  ->  Hash Join  (cost=5126.98..5216.56 rows=26 width=55) (actual time=14.729..16.253 rows=192 loops=1)
         Hash Cond: (f.specialty_key = ds.specialty_key)
         Buffers: shared hit=2051
-        ->  Finalize GroupAggregate  (cost=5123.46..5205.54 rows=576 width=48) (actual time=15.400..17.095 rows=192 loops=1)
+        ->  Finalize GroupAggregate  (cost=5125.77..5207.85 rows=576 width=48) (actual time=14.697..16.198 rows=192 loops=1)
               Group Key: dd.year, dd.month, f.specialty_key
               Buffers: shared hit=2050
-              ->  Gather Merge  (cost=5123.46..5189.70 rows=576 width=48) (actual time=15.389..16.965 rows=384 loops=1)
+              ->  Gather Merge  (cost=5125.77..5192.01 rows=576 width=48) (actual time=14.686..16.077 rows=384 loops=1)
                     Workers Planned: 1
                     Workers Launched: 1
                     Buffers: shared hit=2050
-                    ->  Sort  (cost=4123.45..4124.89 rows=576 width=48) (actual time=13.593..13.600 rows=192 loops=2)
+                    ->  Sort  (cost=4125.76..4127.20 rows=576 width=48) (actual time=12.181..12.190 rows=192 loops=2)
                           Sort Key: dd.year, dd.month, f.specialty_key
                           Sort Method: quicksort  Memory: 46kB
                           Buffers: shared hit=2050
                           Worker 0:  Sort Method: quicksort  Memory: 46kB
-                          ->  Partial HashAggregate  (cost=4089.84..4097.04 rows=576 width=48) (actual time=13.476..13.520 rows=192 loops=2)
+                          ->  Partial HashAggregate  (cost=4092.15..4099.35 rows=576 width=48) (actual time=12.067..12.108 rows=192 loops=2)
                                 Group Key: dd.year, dd.month, f.specialty_key
                                 Batches: 1  Memory Usage: 169kB
                                 Buffers: shared hit=2036
                                 Worker 0:  Batches: 1  Memory Usage: 169kB
-                                ->  Hash Join  (cost=59.11..3259.78 rows=66405 width=16) (actual time=0.305..9.113 rows=28287 loops=2)
+                                ->  Hash Join  (cost=59.11..3260.18 rows=66558 width=16) (actual time=0.325..8.156 rows=28287 loops=2)
                                       Hash Cond: (f.admit_date_key = dd.date_key)
                                       Buffers: shared hit=2036
-                                      ->  Parallel Seq Scan on fact_encounters f  (cost=0.00..3025.96 rows=66405 width=16) (actual time=0.006..5.284 rows=28287 loops=2)
+                                      ->  Parallel Seq Scan on fact_encounters f  (cost=0.00..3025.96 rows=66558 width=16) (actual time=0.007..4.433 rows=28287 loops=2)
                                             Filter: (claim_count > 0)
                                             Rows Removed by Filter: 6715
                                             Buffers: shared hit=1997
-                                      ->  Hash  (cost=36.27..36.27 rows=1827 width=8) (actual time=0.284..0.285 rows=1827 loops=2)
+                                      ->  Hash  (cost=36.27..36.27 rows=1827 width=8) (actual time=0.301..0.302 rows=1827 loops=2)
                                             Buckets: 2048  Batches: 1  Memory Usage: 88kB
                                             Buffers: shared hit=36
-                                            ->  Seq Scan on dim_date dd  (cost=0.00..36.27 rows=1827 width=8) (actual time=0.007..0.133 rows=1827 loops=2)
+                                            ->  Seq Scan on dim_date dd  (cost=0.00..36.27 rows=1827 width=8) (actual time=0.008..0.133 rows=1827 loops=2)
                                                   Buffers: shared hit=36
-        ->  Hash  (cost=1.09..1.09 rows=9 width=15) (actual time=0.010..0.011 rows=9 loops=1)
+        ->  Hash  (cost=1.09..1.09 rows=9 width=15) (actual time=0.012..0.013 rows=9 loops=1)
               Buckets: 1024  Batches: 1  Memory Usage: 9kB
               Buffers: shared hit=1
-              ->  Seq Scan on dim_specialty ds  (cost=0.00..1.09 rows=9 width=15) (actual time=0.005..0.006 rows=9 loops=1)
+              ->  Seq Scan on dim_specialty ds  (cost=0.00..1.09 rows=9 width=15) (actual time=0.007..0.008 rows=9 loops=1)
                     Buffers: shared hit=1
 Planning:
   Buffers: shared hit=437
-Planning Time: 0.848 ms
-Execution Time: 17.545 ms
+Planning Time: 1.025 ms
+Execution Time: 16.472 ms
 
 
-==============================================================
+*******************************************************
  PERFORMANCE COMPARISON  (median of 3 warm runs, same instance)
-==============================================================
+*******************************************************
 
 QUERY       OLTP (ms)      STAR (ms)     SPEEDUP
 --------------------------------------------------------------
-Q1            121.887         59.786        2.0x
-Q2            784.986        231.715        3.4x
-Q3           8781.832          6.718     1307.2x
-Q4             49.077         18.646        2.6x
+Q1            101.355         71.254        1.4x
+Q2            643.808        206.387        3.1x
+Q3           8701.076          5.889     1477.5x
+Q4             55.097         18.687        2.9x
 
 Absolute times are specific to this machine and this dataset size.
 The RATIO is the finding; the milliseconds are not portable.

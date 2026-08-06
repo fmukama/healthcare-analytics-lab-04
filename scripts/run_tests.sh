@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# =============================================================================
 # Runs every tests/NN_*.sql and fails loudly if any assertion fails.
 #
 # The helpers in tests/00_helpers.sql RAISE EXCEPTION on a failed assertion.
@@ -8,7 +7,7 @@
 #
 # A fast query that returns a different number than the source is a bug shipped
 # to the business. This script is what makes the rewrites trustworthy.
-# =============================================================================
+# ---------------------------------------------------------------------------
 set -uo pipefail        # deliberately NOT -e: a failing test must be recorded
                         # and reported, not abort the run before later tests
                         # get a chance to execute.
@@ -21,9 +20,9 @@ shopt -s nullglob       # an empty tests/ dir must yield zero files, not the
                         # literal unexpanded glob string.
 
 run_all() {
-  echo "=============================================================="
+  echo "*******************************************************"
   echo " TEST RUN"
-  echo "=============================================================="
+  echo "*******************************************************"
 
   local fail=0 total=0 files=(/work/tests/[0-9][0-9]_*.sql)
 

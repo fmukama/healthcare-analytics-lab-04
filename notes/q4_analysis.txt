@@ -1,39 +1,32 @@
 Schema Analysis:
   - Tables joined   : billing, encounters, providers, specialties
   - Number of joins : 3 (all INNER) - the longest chain in the lab, exactly the
-                      billing -> encounters -> providers -> specialties path the
-                      brief names
-  - Rows scanned    : 126,649  (56,574 billing rows surviving the filter, from
+                      billing -> encounters -> providers -> specialties path
+  - Rows scanned    : 126,649  (56,574 billing rows surviving the filter, of
                       61,598, + 70,004 encounters + 63 + 8)
   - Rows aggregated : 56,574 -> 192 output rows
 
 Bottleneck Identified:
-  The same disease as Q1, one hop worse, but the mildest case in the lab.
+  The same disease as Q1, one hop worse - but the mildest case in the lab.
 
-  Revenue lives in billing, the month lives on encounters, and the specialty is
-  two further hops away through providers. Nothing in the schema lets a claim
-  know which specialty earned it, so the whole chain must be walked to attach one
-  label to each of 56,574 rows. The plan builds a 70,004-row hash of encounters
-  and streams billing past it, then hashes the two small dimensions.
+  Revenue lives in billing, the month on encounters, the specialty two further hops
+  through providers. Nothing lets a claim know which specialty earned it, so the
+  whole chain is walked to attach one label to each of 56,574 rows.
 
-  It is only ~93ms because the aggregation is a HashAggregate rather than the
-  sort Q1 needs - SUM and COUNT can both run with a running accumulator, so
-  nothing has to be ordered. That is the useful contrast with Q1: same shape,
-  one more join, but no COUNT(DISTINCT), and it comes out twice as fast.
+  It stays under 60ms because the aggregation is a HashAggregate, not the sort Q1
+  needs - SUM and COUNT run with a running accumulator, so nothing is ordered. That
+  is the contrast with Q1: one more join, no COUNT(DISTINCT), and it is faster.
 
-  What makes it slow is therefore not the aggregate but the join chain plus
-  re-deriving date_trunc('month', ...) on every surviving row, all of it
-  recomputed from scratch on every run.
+  So the cost is the join chain plus re-deriving date_trunc('month', ...) per
+  surviving row, recomputed from scratch every run.
 
-  Four decisions this query forced, all recorded in design_decisions.txt:
-  a) Month comes from encounter_date, not claim_date, so revenue lines up with
-     when care was delivered rather than when paperwork was filed weeks later.
-  b) allowed_amount (what the insurer agreed to pay), not claim_amount (what was
-     asked for). The brief asks for allowed.
-  c) Denied claims are excluded - 5,024 of 61,598. Counting them overstates
-     revenue at $151.8M against a truthful $139.6M. Pending claims are kept,
-     because allowed_amount is the contractually agreed figure.
-  d) The query is anchored FROM billing, so the 8,406 unbilled encounters simply
-     do not appear. That is right for a revenue question - there is no
-     allowed_amount to sum. It would be wrong for "average revenue per
-     encounter", which is a different question needing a LEFT JOIN and COALESCE.
+  Four decisions this query forced (see design_decisions.txt):
+  a) Month from encounter_date, not claim_date - revenue lines up with when care
+     was delivered, not when paperwork was filed.
+  b) allowed_amount (what the insurer agreed to pay), not claim_amount.
+  c) Denied claims excluded - 5,024 of 61,598. Counting them overstates revenue at
+     $151.8M against a truthful $139.6M. Pending is kept: allowed_amount is
+     contractually agreed.
+  d) Anchored FROM billing, so unbilled encounters do not appear. Correct for a
+     revenue question; wrong for "average revenue per encounter", which needs a
+     LEFT JOIN and COALESCE.

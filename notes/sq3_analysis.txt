@@ -1,56 +1,43 @@
 Comparison:
-  - OLTP  : 8781.832 ms   (sql/analysis/q3_readmission.sql)
-  - STAR  :       6.718 ms
-  - Improvement: 1307x faster
-  - Parity: proven identical (8 rows, both EXCEPT directions,
-            tests/12_parity_q3.sql), and the underlying flag proven row-by-row
-            against the OLTP self-join across all 70,004 encounters
-            (tests/14_readmission_flag.sql)
+  - OLTP  : 8,701.076 ms   (sql/analysis/q3_readmission.sql)
+  - STAR  :     5.889 ms
+  - Improvement: 1,477x faster
+  - Parity: identical (8 rows, both EXCEPT directions, tests/12_parity_q3.sql), and
+            the flag itself proven row-by-row against the OLTP self-join across all
+            70,004 encounters (tests/14_readmission_flag.sql)
 
 Why it is faster:
   The self-join was not optimised. It stopped existing.
 
-  is_readmit_30d is a boolean column computed once during the ETL. The question
-  "which specialty has the highest 30-day readmission rate" therefore becomes a
-  GROUP BY over a boolean, served by the partial index idx_fact_inpatient, which
+  is_readmit_30d is a boolean computed once during the ETL, so the question becomes
+  a GROUP BY over a boolean, served by the partial index idx_fact_inpatient, which
   covers only the ~12% of rows that are inpatient stays.
 
-  The buffer numbers make the point better than the milliseconds:
+  The buffers make the point better than the milliseconds:
 
       OLTP : 8,939,200 buffer hits   (~71 GB of logical reads, for 8 rows)
       STAR :     2,018 buffer hits
       ratio: 4,430x fewer pages touched
 
-  The OLTP query re-scanned encounters once per index stay because there is no
-  index on patient_id and the match is a date RANGE, which cannot be hashed. The
-  star query reads a narrow slice of one table.
+  Q1, Q2 and Q4 got 1.4-3.1x because their work was made cheaper. Q3 got 1,477x
+  because its work moved to load time and is not done at query time at all. Those
+  are different kinds of win; averaging them would misrepresent both.
 
-  This is the clearest example in the lab of what pre-aggregation actually buys.
-  Q1, Q2 and Q4 got faster by 2-3x because their work was made cheaper. Q3 got
-  1307x faster because its work was moved to load time and is not done at query
-  time at all. Those are different kinds of win, and blurring them into an
-  "average speedup" would misrepresent both.
-
-The cost, stated honestly:
-  is_readmit_30d is DERIVED data. Three consequences:
-
-  1. If the clinical definition changes from 30 days to 45, this column must be
-     RELOADED. No query edit can fix it. days_to_next_encounter is stored beside
-     it precisely so the threshold stays auditable and re-derivable without
-     returning to the source.
-  2. It depends on the FUTURE. An inpatient stay discharged on Monday only
-     becomes a readmission when the return visit arrives, so an incremental load
-     must recompute already-loaded rows at least 30 days back, not just insert
-     new ones.
-  3. It can silently drift from the source definition. That is exactly why
-     tests/14 compares the flag row-by-row rather than trusting the 8 aggregated
-     rows in tests/12, where two opposite errors could cancel out. A fast,
-     confident, wrong answer is the failure mode this whole design invites.
+The cost, stated honestly - is_readmit_30d is DERIVED data:
+  1. If the definition changes from 30 to 45 days, the column must be RELOADED. No
+     query edit fixes it. days_to_next_encounter sits beside it so the threshold
+     stays auditable without returning to the source.
+  2. It depends on the FUTURE. A stay discharged Monday only becomes a readmission
+     when the return arrives, so incremental loads must recompute already-loaded
+     rows at least 30 days back.
+  3. It can silently drift from the source definition. That is why tests/14
+     compares the flag row-by-row rather than trusting the 8 aggregated rows in
+     tests/12, where two opposite errors could cancel out. A fast, confident, wrong
+     answer is the failure mode this design invites.
 
 On the cohort translation:
-  Q3's index stays are `encounter_type = 'Inpatient' AND discharge_date IS NOT
-  NULL`. The star equivalent is `f.is_inpatient AND f.discharge_date_key <> -1`,
-  because the ETL maps a NULL discharge to the dim_date Unknown member. That
-  second predicate matches 0 rows today - every generated encounter has a
-  discharge date - but without it this stops being a translation of Q3 the moment
-  one open stay exists, and it would fail silently rather than loudly.
+  Q3's index stays are encounter_type = 'Inpatient' AND discharge_date IS NOT NULL.
+  The star equivalent is f.is_inpatient AND f.discharge_date_key <> -1, because the
+  ETL maps a NULL discharge to the Unknown date member. That second predicate
+  matches 0 rows today, but without it this stops being a translation of Q3 the
+  moment one open stay exists - and it would fail silently.

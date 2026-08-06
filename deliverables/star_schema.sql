@@ -1,4 +1,3 @@
--- =============================================================================
 -- Part 3.2  Star schema DDL
 --   Grain of fact_encounters: ONE ROW PER ENCOUNTER  (Design Decision 1)
 --   Convention: *_key = warehouse surrogate key (never exposed to source systems)
@@ -8,7 +7,6 @@
 -- Why never a NULL foreign key: a NULL silently drops the fact row from every
 -- inner join, so bad data becomes invisible instead of loud. A -1 Unknown member
 -- keeps the row countable: SELECT count(*) ... WHERE patient_key = -1.
--- =============================================================================
 DROP SCHEMA IF EXISTS star CASCADE;
 CREATE SCHEMA star;
 SET search_path = star, public;
@@ -222,7 +220,7 @@ CREATE TABLE fact_encounters (
     -- pre-computed analytics ----------------------------------------------
     is_inpatient          BOOLEAN       NOT NULL DEFAULT FALSE,
 
-    -- ⭐ The two highest-value columns in the schema. Q3's 30-day readmission
+    --  The two highest-value columns in the schema. Q3's 30-day readmission
     -- question is a SELF-JOIN on 600k rows in the OLTP model; here the answer
     -- is already computed, so Q3 degenerates into a GROUP BY over a boolean.
     -- The cost of pre-computing: this is DERIVED data. If the clinical

@@ -1,30 +1,21 @@
 Schema Analysis:
   - Tables joined   : encounters, providers, specialties
-  - Number of joins : 2 (both INNER, and CHAINED - specialties is only reachable
-                      through providers)
+  - Number of joins : 2 INNER, chained - specialties is only reachable via providers
   - Rows scanned    : 70,075  (70,004 encounters + 63 providers + 8 specialties)
   - Rows aggregated : 70,004 -> 576 output rows
 
 Bottleneck Identified:
-  Four separate costs, and only the first is the one people name.
+  The sort, not the joins.
 
-  1. An encounter does not know its own specialty. The label lives two hops away
-     (encounters -> providers -> specialties), so all 70,004 rows are pushed
-     through two joins just to attach one word. The joins themselves are cheap -
-     the plan hashes both small dimensions - but the chain is unavoidable.
+  COUNT(DISTINCT patient_id) has no running-counter form, so the planner uses a
+  GroupAggregate and sorts all 70,004 rows (quicksort, 6,875 kB). That sort
+  dominates. The joins are cheap - both dimensions hash.
 
-  2. The full table is read every time. There is no filter, so idx_encounter_date
-     is correctly ignored and the plan does a Seq Scan. An index helps you find a
-     few rows; this query wants all of them.
+  Three costs behind it:
+  1. An encounter does not know its own specialty. Every row walks
+     encounters -> providers -> specialties to attach one word.
+  2. No filter, so the plan correctly ignores idx_encounter_date and does a Seq
+     Scan. An index finds a few rows; this query wants all of them.
+  3. date_trunc() runs per row - 70,004 calls to produce 24 months.
 
-  3. GROUP BY derives the month with date_trunc() per row - a function call on
-     every one of the 70,004 rows to produce 24 distinct values.
-
-  4. The real cost: COUNT(DISTINCT patient_id) cannot use a running counter, so
-     Postgres falls back to a GroupAggregate and must SORT all 70,004 rows on
-     four keys, including patient_id. The plan shows quicksort using 6,875 kB,
-     and the sort node runs from 108ms to 114ms of a ~122ms query - the single
-     dominant cost.
-
-  The shape of the waste: 70,004 rows sorted to produce 576. Everything expensive
-  here is recomputed identically on every single run.
+  70,004 rows sorted to return 576, recomputed identically every run.

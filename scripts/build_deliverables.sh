@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# =============================================================================
+# *******************************************************
 # Assembles the generated deliverables from measured output + authored notes.
 #
 #   usage: build_deliverables.sh [query_analysis|star_schema_queries|all]
@@ -18,7 +18,7 @@
 # deliverable would be silently destroyed the next time `make queries` runs.
 # Keeping the prose in notes/ means the numbers refresh and the writing
 # survives.
-# =============================================================================
+# *******************************************************
 set -euo pipefail
 
 WHAT="${1:-all}"
@@ -52,9 +52,9 @@ title_of() {
 
 hdr() {
   printf '%s\n %s\n%s\n\n' \
-    "==============================================================================" \
+    "*******************************************************" \
     "$1" \
-    "=============================================================================="
+    "*******************************************************"
 }
 
 # --- one question block -----------------------------------------------------

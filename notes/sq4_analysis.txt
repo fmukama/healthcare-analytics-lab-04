@@ -1,48 +1,43 @@
 Comparison:
-  - OLTP  : 49.077 ms   (sql/analysis/q4_revenue.sql)
-  - STAR  :  18.646 ms
-  - Improvement: 2.6x faster
-  - Parity: proven identical, both EXCEPT directions, 192 rows
-            (tests/13_parity_q4.sql)
+  - OLTP  : 55.097 ms   (sql/analysis/q4_revenue.sql)
+  - STAR  : 18.687 ms
+  - Improvement: 2.9x faster
+  - Parity: identical, both EXCEPT directions, 192 rows (tests/13_parity_q4.sql)
 
 Why it is faster:
-  `billing` does not appear in this query at all. total_allowed_amount and
-  claim_count are already columns on the fact, so an entire table - and the
-  longest join chain in the lab - drops out. Four tables become fact plus two
-  dimensions, and the Denied-claim filter was applied once at load time rather
-  than on 61,598 rows per run.
+  billing does not appear in this query at all. total_allowed_amount and
+  claim_count are already columns on the fact, so an entire table - and the longest
+  join chain in the lab - drops out. Four tables become fact plus two dimensions,
+  and the Denied-claim filter was applied once at load time instead of on 61,598
+  rows per run.
 
-  dim_specialty is joined after the aggregate, so the GROUP BY runs on a 4-byte
-  surrogate key instead of a VARCHAR(100), and the month comes from a stored
-  column rather than a per-row date_trunc().
+  dim_specialty is joined after the aggregate, so GROUP BY runs on a 4-byte key
+  instead of a VARCHAR(100), and the month is a stored column.
 
-  2.6x, which is better than Q1's 2.0x even though Q1 sheds an expensive sort and
-  this query has none to shed. Q4 gains more because it had more to lose
-  structurally: an entire table plus the longest join chain in the lab. Its
-  aggregation was already a HashAggregate even in 3NF, since SUM and COUNT run
-  with a running accumulator and need no ordering - so nothing was being wasted
-  there to begin with. The whole cost was the chain, and the chain is exactly
-  what the star schema removes.
+  2.9x, better than Q1's 1.4x even though Q1 sheds an expensive sort and this query
+  has none to shed. Q4 gains more because it had more to lose structurally: a whole
+  table plus the longest chain. Its aggregation was already a HashAggregate in 3NF,
+  so nothing was wasted there. The cost was the chain, and the chain is what the
+  star removes.
 
 Two things that make this an exact translation rather than a near-enough one:
 
-  1. claim_count. Q4's COUNT(*) counts BILLING ROWS, not encounters. The fact is
-     at encounter grain, so the equivalent is SUM(f.claim_count) - never
-     COUNT(*) over fact rows, which would count encounters and be wrong by the
-     number of multi-claim encounters. SUM(smallint) returns bigint, matching
-     COUNT(*), so the parity EXCEPT needs no cast.
+  1. claim_count. Q4's COUNT(*) counts BILLING ROWS, not encounters. The fact is at
+     encounter grain, so the equivalent is SUM(f.claim_count) - never COUNT(*) over
+     fact rows, which would count encounters and be wrong by the number of
+     multi-claim encounters. SUM(smallint) returns bigint, matching COUNT(*), so
+     the parity EXCEPT needs no cast.
 
-  2. WHERE f.claim_count > 0. Q4 is anchored FROM billing, so a (month,
-     specialty) combination with no payable claim produces NO ROW. The fact holds
-     a row for every encounter, billed or not, so without this predicate the star
-     emits that group with total_allowed = 0. The SUMS are identical either way -
-     unbilled rows carry 0, the additive identity - so what this predicate
-     controls is group EXISTENCE and nothing else. That is exactly why it is easy
-     to omit and quietly return 193 rows instead of 192, with every total
-     correct. tests/13 asserts the filtered group count equals the OLTP row count
-     so this cannot regress unnoticed.
+  2. WHERE f.claim_count > 0. Q4 is anchored FROM billing, so a (month, specialty)
+     with no payable claim produces NO ROW. The fact holds a row for every
+     encounter, so without this predicate the star emits that group with
+     total_allowed = 0. The SUMS are identical either way - unbilled rows carry 0,
+     the additive identity - so this predicate controls group EXISTENCE and nothing
+     else. That is why it is easy to omit and quietly return 193 rows instead of
+     192, with every total correct. tests/13 asserts the filtered group count
+     equals the OLTP row count so it cannot regress unnoticed.
 
   The Denied filter lives in the ETL's billing CTE and in Q4's WHERE clause, and
-  the two must match. If they ever diverge the parity test fails - and the ETL is
-  what is wrong, not the test. tests/07 carries a negative control proving the
-  filter is genuinely applied rather than accidentally a no-op on both sides.
+  they must match. If they diverge the parity test fails - and the ETL is what is
+  wrong, not the test. tests/07 carries a negative control proving the filter is
+  genuinely applied rather than accidentally a no-op on both sides.

@@ -1,58 +1,43 @@
 Comparison:
-  - OLTP  : 784.986 ms   (sql/analysis/q2_dx_px_pairs.sql)
-  - STAR  :  231.715 ms
-  - Improvement: 3.4x faster
-  - Parity: proven identical over the FULL 2,400-pair result, both EXCEPT
-            directions (tests/11_parity_q2.sql)
+  - OLTP  : 643.808 ms   (sql/analysis/q2_dx_px_pairs.sql)
+  - STAR  : 206.387 ms
+  - Improvement: 3.1x faster
+  - Parity: identical over the FULL 2,400-pair result, both EXCEPT directions
+            (tests/11_parity_q2.sql)
 
 Why it is faster:
-  This is the one query that does NOT become trivial, and saying so plainly is
-  more useful than pretending otherwise. It is still a many-to-many join. It gets
-  faster for three ordinary reasons rather than one structural one:
+  This is the one query that does NOT become trivial - it is still a many-to-many
+  join. Three ordinary gains rather than one structural one:
 
-  1. The hop through `encounters` disappears - both bridges point straight at the
-     fact via encounter_sk, so the junction tables no longer have to be joined
-     back through their parent.
-  2. Narrow integer surrogate keys instead of varchar joins, on tables that carry
-     nothing but keys.
-  3. COUNT(DISTINCT) becomes COUNT(*) over a pre-deduplicated set, which lets the
-     plan use a HashAggregate where the OLTP version needs a GroupAggregate fed
-     by a 30 MB sort of 262,323 rows.
+  1. The hop through encounters disappears - both bridges point straight at the
+     fact via encounter_sk.
+  2. Narrow integer surrogate keys, on tables carrying nothing but keys.
+  3. COUNT(DISTINCT) becomes COUNT(*) over a pre-deduplicated set, so the plan uses
+     a HashAggregate where OLTP needs a GroupAggregate fed by a 30 MB sort of
+     262,323 rows.
 
-  Point 3 is exact, not an approximation, and it is the BRIDGE DESIGN that makes
-  it safe. bridge_encounter_diagnoses is keyed (encounter_sk, diagnosis_key), so
-  it already holds at most one row per encounter+diagnosis. The procedures bridge
-  deliberately is not - it preserves repeat CPT codes, because two chest X-rays
-  are two real billable events - so it is deduplicated inside the query instead.
-  With both sides unique per encounter, the join emits exactly one row per
-  (encounter, diagnosis, procedure) triple, so COUNT(*) IS the distinct-encounter
-  count.
-
-  The SELECT DISTINCT is a no-op on this dataset (no encounter repeats a CPT) but
-  it is load bearing: without it, one repeat would inflate the count above the
-  true number of encounters.
+  Point 3 is exact, and the BRIDGE DESIGN is what makes it safe.
+  bridge_encounter_diagnoses is keyed (encounter_sk, diagnosis_key), so it holds at
+  most one row per encounter+diagnosis. The procedures bridge deliberately is not -
+  it preserves repeat CPT codes, because two chest X-rays are two real billable
+  events - so it is deduplicated inside the query. With both sides unique per
+  encounter, the join emits one row per (encounter, diagnosis, procedure) triple,
+  so COUNT(*) IS the distinct-encounter count. The SELECT DISTINCT is a no-op on
+  this dataset but load-bearing: one repeat CPT would inflate the count.
 
 What this query does NOT get:
-  3.4x, against Q3's 1307x. The difference is instructive. Q3 had its work
-  ELIMINATED at load time; Q2 only had its work made cheaper. Any question that
-  genuinely needs code-level detail has to touch the many-to-many, and no
-  dimensional model removes that - it only confines it. Q1, Q3 and Q4 never touch
-  these bridges at all, which is the actual win.
+  3.1x, against Q3's 1,477x. Q3 had its work ELIMINATED at load time; Q2 only had
+  its work made cheaper. Any question needing code-level detail must touch the
+  many-to-many; a dimensional model only confines it. Q1, Q3 and Q4 never touch
+  these bridges - that is the actual win.
 
-  The production fix would be a pre-built agg_diagnosis_procedure_pairs summary
-  table. It would be far faster and it would answer exactly one question; the
-  bridge answers any question about diagnoses or procedures. That is the trade.
+  The production fix is a pre-built agg_diagnosis_procedure_pairs table: far
+  faster, and it answers one question where the bridge answers any.
 
 On the top-20 not being unique:
-  Q2's ORDER BY has no tiebreaker and there is a tie AT the cut. Measured: the
-  cut value is 140, 13 pairs sit strictly above it, and 8 are tied for the 7
-  remaining slots - so 8 different top-20s are all equally correct. Both engines
-  happen to return the same 20 today, but that is an accident of both plans using
-  a top-N heapsort fed in the same order.
-
-  Rather than assert something that is not actually true, the test proves the
-  FULL 2,400-pair population is identical (strictly stronger than checking 20
-  rows), plus the cut value, the vector of 20 counts, and the 13 rows above the
-  cut. In production I would add `, icd10_code, cpt_code` to the ORDER BY - a
-  report whose rows reshuffle between runs is broken as a report, independent of
-  which schema serves it. I left the brief's query as written.
+  ORDER BY has no tiebreaker and there is a tie AT the cut - 13 pairs sit above the
+  cut value of 140 and 8 are tied for the 7 remaining slots, so 8 different top-20s
+  are equally correct. The test therefore proves the FULL 2,400-pair population is
+  identical, which is strictly stronger than checking 20 rows. In production I
+  would add icd10_code, cpt_code to the ORDER BY; I left the brief's query as
+  written.
